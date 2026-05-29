@@ -3,8 +3,14 @@ import numpy as np
 import geopandas as gpd
 from shapely.geometry import Point
 from scipy.interpolate import Rbf
-import matplotlib.pyplot as plt
 from pathlib import Path
+import folium  
+import webbrowser 
+import os
+import ssl
+
+# Игнорируем ошибку SSL сертификата
+ssl._create_default_https_context = ssl._create_unverified_context
 
 def generate_perfect_wind_map():
     input_file = Path("data/processed/knmi_stations_summary.csv")
@@ -19,11 +25,12 @@ def generate_perfect_wind_map():
     y_st = df_stations['lat'].values
     z_wind = df_stations['avg_wind_speed'].values
 
-    lon_min, lon_max = x_st.min() - 0.3, x_st.max() + 0.3
-    lat_min, lat_max = y_st.min() - 0.3, y_st.max() + 0.3
+    # Сетка
+    lon_min, lon_max = x_st.min() - 1.0, x_st.max() + 0.5
+    lat_min, lat_max = y_st.min() - 0.5, y_st.max() + 1.0
 
-    grid_lon = np.linspace(lon_min, lon_max, 200)
-    grid_lat = np.linspace(lat_min, lat_max, 200)
+    grid_lon = np.linspace(lon_min, lon_max, 250)
+    grid_lat = np.linspace(lat_min, lat_max, 250)
     X_grid, Y_grid = np.meshgrid(grid_lon, grid_lat)
 
     rbf = Rbf(x_st, y_st, z_wind, function='inverse', power=2)
@@ -38,39 +45,32 @@ def generate_perfect_wind_map():
     gdf_grid = gpd.GeoDataFrame(df_grid, geometry=grid_geom, crs="EPSG:4326")
 
     # ---------------------------------------------------------
-    # ШАГ 2: ТОЧЕЧНАЯ МАСКА (Суша + Вода у Гааги)
+    # ШАГ 2: УМНАЯ МАСКА (Суша + Прибрежное море 30 км)
     # ---------------------------------------------------------
-    print("2. Загружаю идеальную карту суши...")
-    url_geojson = "https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson"
-    world = gpd.read_file(url_geojson)
-
+    print("2. Загружаю карту суши...")
+    url_land = "https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson"
+    world = gpd.read_file(url_land)
     nl_land = world[world['ISO3166-1-Alpha-3'] == 'NLD'].copy()
-    
-    if nl_land.empty:
-        print("❌ ОШИБКА: Нидерланды не найдены.")
-        return
 
-    print("3. Выбираю станции на западном побережье (возле Гааги/Роттердама)...")
-    # ГЕОГРАФИЧЕСКИЙ ФИЛЬТР: Берем только станции с долготой < 4.65
-    west_coast_stations = df_stations[df_stations['lon'] < 4.65].copy()
-    print(f"   Найдено станций на западе: {len(west_coast_stations)}. Добавляю воду вокруг них...")
+    print("3. Скачиваю официальную морскую зону (EEZ)...")
+    url_eez = "https://geo.vliz.be/geoserver/MarineRegions/ows?service=WFS&version=1.0.0&request=GetFeature&typeName=MarineRegions:eez&cql_filter=mrgid=5668&outputFormat=application/json"
+    nl_eez = gpd.read_file(url_eez)
 
-    st_geom = [Point(xy) for xy in zip(west_coast_stations['lon'], west_coast_stations['lat'])]
-    gdf_west_stations = gpd.GeoDataFrame(west_coast_stations, geometry=st_geom, crs="EPSG:4326")
-
-    # Переводим в метры (Web Mercator) для ровного буфера
+    print("4. GIS-магия: Вырезаю ровно 30 км воды вдоль берега (Intersection)...")
     nl_land_metric = nl_land.to_crs(epsg=3857)
-    west_stations_metric = gdf_west_stations.to_crs(epsg=3857)
+    nl_eez_metric = nl_eez.to_crs(epsg=3857)
 
-    # Буфер ровно 20 км только для западного побережья
-    west_buffers_metric = west_stations_metric.copy()
-    west_buffers_metric['geometry'] = west_buffers_metric.geometry.buffer(20000)
+    # 1. Раздуваем сушу на 30 000 метров (30 км)
+    fat_land = nl_land_metric.copy()
+    fat_land['geometry'] = fat_land.geometry.buffer(30000)
 
-    print("4. Склеиваю сушу и прибрежные воды Гааги в единый контур...")
-    combined_mask_metric = pd.concat([nl_land_metric[['geometry']], west_buffers_metric[['geometry']]])
+    # 2. Находим пересечение (Оставляем только ту часть "раздутия", которая попала в море)
+    near_shore_sea = gpd.overlay(fat_land, nl_eez_metric, how='intersection')
+
+    # 3. Склеиваем оригинальную сушу и прибрежное море
+    combined_mask_metric = pd.concat([nl_land_metric[['geometry']], near_shore_sea[['geometry']]])
     combined_mask_metric = combined_mask_metric.dissolve()
 
-    # Возврат в градусы
     combined_mask = combined_mask_metric.to_crs(epsg=4326)
 
     # ---------------------------------------------------------
@@ -80,33 +80,49 @@ def generate_perfect_wind_map():
     gdf_final = gpd.sjoin(gdf_grid, combined_mask, how="inner", predicate="within")
 
     gdf_final[['cell_lon', 'cell_lat', 'wind_speed']].to_csv(output_file, index=False)
-    print(f"✅ Готово! Файл сохранен: {output_file}")
 
     # ---------------------------------------------------------
     # ШАГ 4: ВИЗУАЛИЗАЦИЯ
     # ---------------------------------------------------------
-    print("Рисую результат...")
-    fig, ax = plt.subplots(figsize=(10, 10))
+    print("6. Генерирую интерактивную веб-карту...")
     
-    combined_mask.boundary.plot(ax=ax, color='red', linewidth=1.5, label="Граница (с водой на западе)")
-    
-    scatter = ax.scatter(
-        gdf_final['cell_lon'], gdf_final['cell_lat'], 
-        c=gdf_final['wind_speed'], cmap='YlGnBu', s=15, alpha=0.9
+    m = gdf_final.explore(
+        column="wind_speed",         
+        cmap="YlGnBu",               
+        tooltip="wind_speed",        
+        marker_kwds={"radius": 4, "fill": True, "fillOpacity": 0.6}, 
+        tiles="OpenStreetMap",       
+        legend_kwds={"caption": "Средняя скорость ветра (м/с)"},
+        name="Ветровая сетка"
     )
+
+    combined_mask.boundary.explore(
+        m=m,                         
+        color="red",
+        style_kwds={"weight": 2},    
+        name="Граница зоны"
+    )
+
+    st_geom_all = [Point(xy) for xy in zip(df_stations['lon'], df_stations['lat'])]
+    gdf_all_stations = gpd.GeoDataFrame(df_stations, geometry=st_geom_all, crs="EPSG:4326")
     
-    # Рисуем все станции черным, а те, вокруг которых добавили воду - красным
-    ax.scatter(df_stations['lon'], df_stations['lat'], color='black', s=10, label="Все станции")
-    ax.scatter(west_coast_stations['lon'], west_coast_stations['lat'], color='red', s=15, label="Буферизированные станции")
+    gdf_all_stations.explore(
+        m=m,
+        color="black",
+        marker_kwds={"radius": 5, "fill": True},
+        tooltip=["STN", "station_name", "avg_wind_speed"], 
+        name="Метеостанции KNMI"
+    )
+
+    folium.LayerControl().add_to(m)
+
+    html_output = Path("data/processed/interactive_wind_map.html")
+    m.save(html_output)
     
-    plt.colorbar(scatter, label='Средняя скорость ветра (м/с)')
-    plt.title("Карта ветра (Точная суша + Оффшор у Гааги)")
-    plt.xlabel("Долгота")
-    plt.ylabel("Широта")
-    plt.legend()
+    print("✅ ГОТОВО! Открываю браузер...")
     
-    plt.savefig("data/processed/wind_map_the_hague.png")
-    plt.show()
+    file_path = os.path.abspath(html_output)
+    webbrowser.open(f"file://{file_path}")
 
 if __name__ == "__main__":
     generate_perfect_wind_map()
