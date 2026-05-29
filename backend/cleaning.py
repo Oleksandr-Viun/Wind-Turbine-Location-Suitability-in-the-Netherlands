@@ -6,64 +6,64 @@ def clean_wind_data():
     output_file = Path("data/processed/knmi_wind_clean.csv")
     
     if not input_file.exists():
-        print("❌ Файл не найден. Сначала выполни предыдущий скрипт.")
+        print("❌ File not found. Run the previous script first.")
         return
 
-    print("Загружаю сырой датасет...")
+    print("Loading raw dataset...")
     df = pd.read_csv(input_file)
     initial_rows = len(df)
     
-    print(f"Изначальное количество строк: {initial_rows}")
-    print("\nНачинаю очистку данных...")
+    print(f"Initial number of rows: {initial_rows}")
+    print("\nStarting data cleaning...")
 
-    # ПРАВИЛО 1: Форматирование дат
-    # Превращаем число 20240101 в настоящую дату 2024-01-01
+    # RULE 1: Date formatting
+    # Transform 20240101 into a real date 2024-01-01
     df['date'] = pd.to_datetime(df['YYYYMMDD'], format='%Y%m%d')
-    df = df.drop(columns=['YYYYMMDD']) # Удаляем старую колонку
+    df = df.drop(columns=['YYYYMMDD']) # Remove old column
 
-    # ПРАВИЛО 2: Удаление пропусков (NaN)
-    # Если нет данных о среднем ветре или порывах - эта строка нам не нужна
+    # RULE 2: Remove missing values (NaN)
+    # If there's no data for average wind or gusts, we don't need this row
     df_clean = df.dropna(subset=['FG', 'FHX', 'FXX', 'DDVEC']).copy()
     nan_dropped = initial_rows - len(df_clean)
 
-    # ПРАВИЛО 3: Физические ограничения (Sanity Checks)
-    # 3.1 Ветер не может быть отрицательным
+    # RULE 3: Physical constraints (Sanity Checks)
+    # 3.1 Wind cannot be negative
     df_clean = df_clean[df_clean['FG'] >= 0]
     
-    # 3.2 Направление ветра должно быть от 0 до 360 градусов
+    # 3.2 Wind direction must be between 0 and 360 degrees
     df_clean = df_clean[(df_clean['DDVEC'] >= 0) & (df_clean['DDVEC'] <= 360)]
     
-    # 3.3 Порыв ветра всегда больше или равен средней скорости
+    # 3.3 Wind gust is always greater than or equal to average speed
     df_clean = df_clean[df_clean['FXX'] >= df_clean['FG']]
     
-    # 3.4 Исключаем нереалистичные аномалии (например, скорость > 60 м/с)
-    # Исторический максимум в Нидерландах был около 40-45 м/с.
+    # 3.4 Exclude unrealistic anomalies (e.g., speed > 60 m/s)
+    # Historical maximum in the Netherlands was around 40-45 m/s.
     df_clean = df_clean[df_clean['FXX'] < 60]
 
     final_rows = len(df_clean)
     physics_dropped = (initial_rows - nan_dropped) - final_rows
 
-    # ПЕРЕСТАНОВКА КОЛОНОК (для удобства)
+    # COLUMN REORDERING (for convenience)
     cols = ['STN', 'station_name', 'lat', 'lon', 'date', 'DDVEC', 'FHVEC', 'FG', 'FHX', 'FXX']
     df_clean = df_clean[cols]
 
-    # Сохраняем чистый датасет
+    # Save clean dataset
     df_clean.to_csv(output_file, index=False)
 
     # ---------------------------------------------------------
-    # ОТЧЕТ ОБ ОЧИСТКЕ (DATA QUALITY REPORT)
+    # DATA QUALITY REPORT
     # ---------------------------------------------------------
     print("\n==================================================")
-    print(" 🧹 ОТЧЕТ ОБ ОЧИСТКЕ ДАННЫХ (DATA CLEANING REPORT)")
+    print(" 🧹 DATA CLEANING REPORT")
     print("==================================================")
-    print(f"Всего строк до очистки:        {initial_rows}")
-    print(f"Удалено из-за пустых значений: {nan_dropped} строк")
-    print(f"Удалено из-за ошибок физики:   {physics_dropped} строк")
+    print(f"Total rows before cleaning:    {initial_rows}")
+    print(f"Removed due to empty values:   {nan_dropped} rows")
+    print(f"Removed due to physics errors: {physics_dropped} rows")
     print("-" * 50)
-    print(f"Итоговых чистых строк:         {final_rows}")
-    print(f"Процент сохраненных данных:    {round((final_rows/initial_rows)*100, 2)}%")
+    print(f"Total clean rows:              {final_rows}")
+    print(f"Percentage of saved data:      {round((final_rows/initial_rows)*100, 2)}%")
     print("==================================================")
-    print(f"✅ Чистый файл сохранен: {output_file}")
+    print(f"✅ Clean file saved: {output_file}")
 
 if __name__ == "__main__":
     clean_wind_data()

@@ -11,7 +11,7 @@ import ssl
 
 ssl._create_default_https_context = ssl._create_unverified_context
 
-# === ФУНКЦИЯ ДЛЯ ЗАЛИВКИ ВНУТРЕННИХ ДЫР ===
+# === FUNCTION TO FILL INTERNAL HOLES ===
 def fill_holes(geom):
     if isinstance(geom, Polygon):
         return Polygon(geom.exterior)
@@ -25,9 +25,9 @@ def generate_perfect_wind_map():
     output_file = Path("data/processed/old_grid.csv")
     
     # ---------------------------------------------------------
-    # ШАГ 1: ИНТЕРПОЛЯЦИЯ ВЕТРА (Математика Rbf)
+    # STEP 1: WIND INTERPOLATION (Rbf Mathematics)
     # ---------------------------------------------------------
-    print("1. Рассчитываю математическую модель ветра...")
+    print("1. Calculating mathematical wind model...")
     df_stations = pd.read_csv(input_file)
     x_st = df_stations['lon'].values
     y_st = df_stations['lat'].values
@@ -52,50 +52,50 @@ def generate_perfect_wind_map():
     gdf_grid = gpd.GeoDataFrame(df_grid, geometry=grid_geom, crs="EPSG:4326")
 
     # ---------------------------------------------------------
-    # ШАГ 2: УМНАЯ МАСКА (Суша + Прибрежное море 30 км без дыр)
+    # STEP 2: SMART MASK (Land + 30 km Coastal Sea without holes)
     # ---------------------------------------------------------
-    print("2. Загружаю карту суши...")
+    print("2. Loading land map...")
     url_land = "https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson"
     world = gpd.read_file(url_land)
     nl_land = world[world['ISO3166-1-Alpha-3'] == 'NLD'].copy()
 
-    print("3. Скачиваю официальную морскую зону (EEZ)...")
+    print("3. Downloading official maritime zone (EEZ)...")
     url_eez = "https://geo.vliz.be/geoserver/MarineRegions/ows?service=WFS&version=1.0.0&request=GetFeature&typeName=MarineRegions:eez&cql_filter=mrgid=5668&outputFormat=application/json"
     nl_eez = gpd.read_file(url_eez)
 
-    print("4. GIS-магия: Заделываем внутренние дыры (Ваддензе и Зеландия)...")
+    print("4. GIS Magic: Sealing internal holes (Waddenzee and Zeeland)...")
     nl_land_metric = nl_land.to_crs(epsg=3857)
     nl_eez_metric = nl_eez.to_crs(epsg=3857)
 
-    # Сливаем сушу и океан вместе (образуются внутренние дыры)
+    # Merge land and ocean together (internal holes form)
     combined_raw = pd.concat([nl_land_metric[['geometry']], nl_eez_metric[['geometry']]])
     combined_raw = combined_raw.dissolve()
 
-    # Заливаем "бетоном" внутренние воды с помощью нашей функции
+    # Seal internal waters "with concrete" using our function
     combined_solid = combined_raw.copy()
     combined_solid['geometry'] = combined_solid.geometry.apply(fill_holes)
 
-    print("5. Вырезаем ровно 30 км вдоль берега...")
-    # Раздуваем сушу
+    print("5. Cutting exactly 30 km along the coast...")
+    # Buffer the land
     fat_land = nl_land_metric.copy()
     fat_land['geometry'] = fat_land.geometry.buffer(30000)
 
-    # Оставляем только то, что попало в "монолитную" территорию Нидерландов
+    # Keep only what fell into the "monolithic" territory of the Netherlands
     final_mask_metric = gpd.overlay(fat_land, combined_solid, how='intersection')
     combined_mask = final_mask_metric.to_crs(epsg=4326)
 
     # ---------------------------------------------------------
-    # ШАГ 3: ОБРЕЗКА И СОХРАНЕНИЕ
+    # STEP 3: CLIPPING AND SAVING
     # ---------------------------------------------------------
-    print("6. Вырезаю финальную карту...")
+    print("6. Clipping final map...")
     gdf_final = gpd.sjoin(gdf_grid, combined_mask, how="inner", predicate="within")
 
     gdf_final[['cell_lon', 'cell_lat', 'wind_speed']].to_csv(output_file, index=False)
 
     # ---------------------------------------------------------
-    # ШАГ 4: ВИЗУАЛИЗАЦИЯ
+    # STEP 4: VISUALIZATION
     # ---------------------------------------------------------
-    print("7. Генерирую интерактивную веб-карту...")
+    print("7. Generating interactive web map...")
     
     m = gdf_final.explore(
         column="wind_speed",         
@@ -103,15 +103,15 @@ def generate_perfect_wind_map():
         tooltip="wind_speed",        
         marker_kwds={"radius": 4, "fill": True, "fillOpacity": 0.6}, 
         tiles="OpenStreetMap",       
-        legend_kwds={"caption": "Средняя скорость ветра (м/с)"},
-        name="Ветровая сетка"
+        legend_kwds={"caption": "Average wind speed (m/s)"},
+        name="Wind Grid"
     )
 
     combined_mask.boundary.explore(
         m=m,                         
         color="red",
         style_kwds={"weight": 2},    
-        name="Граница зоны"
+        name="Zone Boundary"
     )
 
     st_geom_all = [Point(xy) for xy in zip(df_stations['lon'], df_stations['lat'])]
@@ -122,7 +122,7 @@ def generate_perfect_wind_map():
         color="black",
         marker_kwds={"radius": 5, "fill": True},
         tooltip=["STN", "station_name", "avg_wind_speed"], 
-        name="Метеостанции KNMI"
+        name="KNMI Weather Stations"
     )
 
     folium.LayerControl().add_to(m)
@@ -130,7 +130,7 @@ def generate_perfect_wind_map():
     html_output = Path("data/processed/interactive_wind_map.html")
     m.save(html_output)
     
-    print("✅ ГОТОВО! Открываю браузер...")
+    print("✅ DONE! Opening browser...")
     
     file_path = os.path.abspath(html_output)
     webbrowser.open(f"file://{file_path}")

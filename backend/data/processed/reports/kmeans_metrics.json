@@ -1,0 +1,22 @@
+{
+  "model": "KMeans",
+  "n_clusters": 3,
+  "rows_total": 17147,
+  "rows_clustered_non_natura": 13030,
+  "rows_excluded_natura2000": 4117,
+  "features_used_for_kmeans": [
+    "wind_score",
+    "population_score",
+    "infrastructure_score"
+  ],
+  "features_not_used_for_kmeans": [
+    "cell_lon",
+    "cell_lat",
+    "is_natura2000"
+  ],
+  "reason_coordinates_not_used": "Coordinates are kept for map visualisation but not used as ML features, because otherwise the model would cluster geography instead of suitability.",
+  "reason_natura_not_clustered": "Natura 2000 is treated as a hard exclusion. Protected cells are labelled Excluded and are not treated as candidate turbine locations.",
+  "silhouette_score_sampled": 0.3871279155986352,
+  "silhouette_sample_size": 5000,
+  "davies_bouldin_score": 0.9473263196228681
+}

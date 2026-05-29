@@ -218,4 +218,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Backups
+backups/
 >>>>>>> f2bd849faf4398876d3e466f1f94fe4518188000
