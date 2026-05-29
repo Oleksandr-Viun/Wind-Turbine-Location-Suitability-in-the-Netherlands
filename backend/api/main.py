@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel
 import pandas as pd
 from scipy.spatial import cKDTree
@@ -8,19 +9,30 @@ from typing import Optional
 
 # --- ИНИЦИАЛИЗАЦИЯ ПРИЛОЖЕНИЯ ---
 app = FastAPI(
-    title="Wind Turbine Location API",
-    description="API для оценки пригодности локаций под ветряки в Нидерландах и EEZ",
-    version="1.0.0"
+    title="Wind Turbine Location API (Sprint 2)",
+    description="Продвинутая оценка локаций с учетом Natura 2000, плотности населения и инфраструктуры.",
+    version="2.0.0"
 )
 
 # Разрешаем Next.js общаться с нашим API
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # В продакшене заменим на http://localhost:3000
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], 
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 # --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ (Оперативная память) ---
 df_stations = None
@@ -35,7 +47,9 @@ async def load_data():
     
     base_dir = Path(__file__).parent.parent
     stations_path = base_dir / "data" / "processed" / "knmi_stations_summary.csv"
-    grid_path = base_dir / "data" / "processed" / "wind_grid_final.csv"
+    
+    # 🔴 ЗАГРУЖАЕМ НОВЫЙ ДАТАСЕТ (с плотностью и Natura 2000)
+    grid_path = base_dir / "data" / "processed" / "ml_dataset_final.csv"
 
     print("⏳ Загрузка данных в память сервера...")
     
@@ -49,9 +63,9 @@ async def load_data():
         df_grid = pd.read_csv(grid_path)
         grid_coords = df_grid[['cell_lat', 'cell_lon']].values
         wind_kdtree = cKDTree(grid_coords)
-        print(f"✅ Успешно загружено {len(df_grid)} точек сетки ветра.")
+        print(f"✅ Успешно загружено {len(df_grid)} точек умной сетки.")
     else:
-        print("⚠️ ВНИМАНИЕ: Файл сетки ветра не найден!")
+        print("⚠️ ВНИМАНИЕ: Файл сетки не найден!")
 
 
 # --- СХЕМЫ ЗАПРОСОВ (Pydantic) ---
@@ -86,14 +100,14 @@ async def get_station_by_id(station_id: int):
 
 
 # ==========================================
-# 2. ГРУППА: ВЕТЕР (Wind Grid)
+# 2. ГРУППА: ВЕТЕР И СРЕДА (Environment Grid)
 # ==========================================
 
-@app.get("/api/v1/wind/point", tags=["Wind"])
-async def get_wind_at_point(lat: float, lon: float):
-    """Ищет скорость ветра в ближайшей точке нашей сгенерированной сетки."""
+@app.get("/api/v1/wind/point", tags=["Environment Data"])
+async def get_environment_at_point(lat: float, lon: float):
+    """Ищет ближайшую клетку в ML-датасете и отдает ВСЕ ее характеристики."""
     if df_grid is None or wind_kdtree is None:
-        raise HTTPException(status_code=500, detail="Сетка ветра не загружена")
+        raise HTTPException(status_code=500, detail="Сетка не загружена")
     
     # Ищем ближайшую точку (k=1)
     distance, index = wind_kdtree.query([lat, lon], k=1)
@@ -106,27 +120,40 @@ async def get_wind_at_point(lat: float, lon: float):
             "error": "Локация находится слишком далеко от побережья Нидерландов или за пределами EEZ"
         }
     
-    point_data = df_grid.iloc[index]
+    point = df_grid.iloc[index]
     
     return {
         "requested_lat": lat,
         "requested_lon": lon,
-        "grid_lat": float(point_data['cell_lat']),
-        "grid_lon": float(point_data['cell_lon']),
-        "wind_speed_ms": round(float(point_data['wind_speed']), 2),
+        "grid_lat": float(point['cell_lat']),
+        "grid_lon": float(point['cell_lon']),
+        "wind_speed_ms": round(float(point['wind_speed']), 2),
+        "is_natura2000": int(point['is_natura2000']),
+        "dist_to_nearest_turbine_m": int(point['dist_to_nearest_turbine_m']),
+        "population_density": int(point['population_density']),
         "distance_deg": round(distance, 4)
     }
 
-@app.get("/api/v1/wind/bbox", tags=["Wind"])
-async def get_wind_bbox(
+@app.get("/api/v1/wind/all", tags=["Environment Data"])
+async def get_all_environment_data():
+    """Возвращает ВСЮ сетку целиком (для отрисовки Heatmap на фронтенде)."""
+    if df_grid is None:
+        raise HTTPException(status_code=500, detail="Сетка не загружена")
+    
+    # Отдаем все 17 148 точек разом
+    return df_grid.to_dict(orient="records")
+
+
+@app.get("/api/v1/wind/bbox", tags=["Environment Data"])
+async def get_environment_bbox(
     min_lat: float = Query(..., description="Нижняя граница (Юг)"),
     max_lat: float = Query(..., description="Верхняя граница (Север)"),
     min_lon: float = Query(..., description="Левая граница (Запад)"),
     max_lon: float = Query(..., description="Правая граница (Восток)")
 ):
-    """Возвращает все точки сетки внутри заданного прямоугольника (для отрисовки на фронтенде)."""
+    """Возвращает все точки сетки внутри заданного прямоугольника."""
     if df_grid is None:
-        raise HTTPException(status_code=500, detail="Сетка ветра не загружена")
+        raise HTTPException(status_code=500, detail="Сетка не загружена")
     
     mask = (
         (df_grid['cell_lat'] >= min_lat) & 
@@ -148,13 +175,12 @@ async def get_boundary_zone():
     """ЗАГЛУШКА: Возвращает GeoJSON границы Нидерландов + 30km EEZ."""
     return {
         "status": "not_implemented",
-        "message": "В будущем здесь будет отдаваться GeoJSON с красной границей, чтобы фронтенд мог её нарисовать."
+        "message": "В будущем здесь будет отдаваться GeoJSON с красной границей."
     }
 
 @app.get("/api/v1/zones/exclusions", tags=["Zones"])
 async def get_exclusion_zones():
-    """ЗАГЛУШКА (Спринт 2): Возвращает массив запретных зон (города, парки)."""
-    # Пока у нас нет датасета Natura 2000, отдаем пустой массив
+    """ЗАГЛУШКА: Возвращает массив запретных гео-зон (города, парки)."""
     return {
         "status": "mock",
         "exclusions": []
@@ -168,42 +194,63 @@ async def get_exclusion_zones():
 @app.post("/api/v1/turbines/evaluate", tags=["Evaluate"])
 async def evaluate_location(request: EvaluateRequest):
     """
-    Главный эндпоинт приложения: принимает координату и решает,
-    можно ли там строить ветряк. (Текущая версия - Заглушка без запретных зон)
+    НАСТОЯЩАЯ БИЗНЕС-ЛОГИКА:
+    Оценивает пригодность локации на основе ветра, парков и населения.
     """
     
-    # 1. Получаем скорость ветра через наш другой эндпоинт
-    wind_data = await get_wind_at_point(request.lat, request.lon)
+    env = await get_environment_at_point(request.lat, request.lon)
     
-    if "error" in wind_data:
+    if "error" in env:
         return {
             "suitable": False,
             "score": 0,
-            "reason": wind_data["error"],
-            "details": wind_data
+            "reason": env["error"],
+            "details": env
         }
     
-    wind_speed = wind_data["wind_speed_ms"]
-    
-    # 2. Мок-логика проверки пригодности (Score 0-100)
     is_suitable = True
     score = 100
     warnings = []
     
-    # Простейшая логика рентабельности по ветру
-    if wind_speed < 5.5:
+    # 1. ПРАВИЛО: Natura 2000 (Строгий запрет)
+    if env["is_natura2000"] == 1:
         is_suitable = False
+        score = 0
+        warnings.append("❌ ЗАПРЕЩЕНО: Территория природоохранной зоны Natura 2000.")
+        
+    # 2. ПРАВИЛО: Ветер (Экономика)
+    wind_speed = env["wind_speed_ms"]
+    if wind_speed < 5.5:
+        if is_suitable: is_suitable = False
         score -= 60
-        warnings.append("Слишком слабый ветер для экономической выгоды (< 5.5 м/с).")
+        warnings.append(f"💨 Слабый ветер ({wind_speed} м/с). Проект нерентабелен.")
     elif wind_speed < 7.0:
         score -= 20
-        warnings.append("Средний ветер. Рекомендуется использовать турбины для слабого ветра с высокой башней.")
-        
+        warnings.append(f"💨 Средний ветер ({wind_speed} м/с). Нужны высокие мачты.")
+
+    # 3. ПРАВИЛО: Население (Социальный риск)
+    pop_density = env["population_density"]
+    if pop_density > 1000:
+        if is_suitable: is_suitable = False
+        score -= 40
+        warnings.append(f"🏘️ Высокая плотность населения ({pop_density} чел/км²). Риск жалоб.")
+    elif pop_density > 300:
+        score -= 15
+        warnings.append(f"🏘️ Средняя плотность населения ({pop_density} чел/км²). Нужен акустический расчет.")
+
+    # 4. ПРАВИЛО: Инфраструктура
+    dist_turbine = env["dist_to_nearest_turbine_m"]
+    if dist_turbine > 50000:
+        score -= 10
+        warnings.append(f"⚡ Изолированная локация ({(dist_turbine/1000):.1f} км до ветряков). Дорого тянуть кабель.")
+
+    score = max(0, score)
+
     return {
         "suitable": is_suitable,
         "score": score,
         "wind_speed_ms": wind_speed,
         "turbine_model": request.turbine_model,
         "warnings": warnings,
-        "zones_checked": ["Mock Phase (Запретные зоны отключены)"]
+        "environment": env
     }

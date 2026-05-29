@@ -22,7 +22,7 @@ def fill_holes(geom):
 
 def generate_perfect_wind_map():
     input_file = Path("data/processed/knmi_stations_summary.csv")
-    output_file = Path("data/processed/wind_grid_final.csv")
+    output_file = Path("data/processed/old_grid.csv")
     
     # ---------------------------------------------------------
     # ШАГ 1: ИНТЕРПОЛЯЦИЯ ВЕТРА (Математика Rbf)
