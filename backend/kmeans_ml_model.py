@@ -15,7 +15,7 @@ from sklearn.metrics import silhouette_score, davies_bouldin_score
 
 def find_processed_dir() -> Path:
     """
-    Supports running the script from different locations:
+    Can be ran from different locations like:
     - from backend/
     - from project root
     - directly by file path

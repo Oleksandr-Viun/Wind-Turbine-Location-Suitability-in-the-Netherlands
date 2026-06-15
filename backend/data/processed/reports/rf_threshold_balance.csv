@@ -1,0 +1,5 @@
+threshold_m,positive_count,negative_count,positive_percentage
+1000,1701,15446,9.92
+2000,3834,13313,22.36
+3000,5803,11344,33.84
+5000,9075,8072,52.92

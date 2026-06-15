@@ -1,19 +1,31 @@
+import os
+from pathlib import Path
+from typing import Optional, List
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel
 import pandas as pd
-import geopandas as gpd
+import numpy as np
 from shapely.geometry import Point
 from scipy.spatial import cKDTree
-from pathlib import Path
-from typing import Optional
+from pymongo import MongoClient
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+MONGO_DB = os.getenv("MONGO_DB", "wind_turbine_suitability")
+MONGO_GRID_COLLECTION = os.getenv("MONGO_GRID_COLLECTION", "grid_cells")
+MONGO_STATIONS_COLLECTION = os.getenv("MONGO_STATIONS_COLLECTION", "knmi_stations")
+MONGO_MODEL_RUNS_COLLECTION = os.getenv("MONGO_MODEL_RUNS_COLLECTION", "model_runs")
 
 # --- APP INITIALIZATION ---
 app = FastAPI(
-    title="Wind Turbine Location API (Sprint 2)",
-    description="Advanced location assessment considering Natura 2000, population density, and infrastructure.",
-    version="2.0.0"
+    title="Wind Turbine Location API (Sprint 2 with MongoDB)",
+    description="Advanced location assessment considering Natura 2000, population density, and infrastructure powered by MongoDB Atlas.",
+    version="2.1.0"
 )
 
 # Allow Next.js to communicate with our API
@@ -43,48 +55,114 @@ def get_suitability_color(score: float, is_natura: int) -> str:
     if score >= 25: return "#2563eb" # Blue (Poor)
     return "#1e3a8a"                 # Dark Blue (Very Poor)
 
+
 # --- GLOBAL VARIABLES (In-memory) ---
 df_stations = None
 df_grid = None
 wind_kdtree = None
 grid_coords = None
+db_client = None
 
 # --- LOAD DATA ON STARTUP ---
 @app.on_event("startup")
 async def load_data():
-    global df_stations, df_grid, wind_kdtree, grid_coords
+    global df_stations, df_grid, wind_kdtree, grid_coords, db_client
     
-    base_dir = Path(__file__).parent.parent
-    stations_path = base_dir / "data" / "processed" / "knmi_stations_summary.csv"
-    
-    # 🔴 LOADING NEW DATASET (with density and Natura 2000)
-    grid_path = base_dir / "data" / "processed" / "ml_dataset_kmeans_full.csv"
-
-    print("⏳ Loading data into server memory...")
-    
-    if stations_path.exists():
-        df_stations = pd.read_csv(stations_path)
-        print(f"✅ Successfully loaded {len(df_stations)} weather stations.")
-    else:
-        print("⚠️ WARNING: Stations file not found!")
-
-    if grid_path.exists():
-        df_grid = pd.read_csv(grid_path)
+    print("⏳ Connecting to MongoDB...")
+    try:
+        db_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+        # Check connection
+        db_client.server_info()
+        db = db_client[MONGO_DB]
+        print("✅ Connected to MongoDB successfully!")
         
-        # Override suitability based on the new 60% threshold
-        df_grid['ml_suitable'] = df_grid['ml_suitability_score'] >= 60.0
+        # 1. Load Stations from MongoDB knmi_stations collection
+        print("⏳ Loading KNMI weather stations from MongoDB...")
+        cursor_st = db[MONGO_STATIONS_COLLECTION].find()
+        flat_st = []
+        for doc in cursor_st:
+            flat_st.append({
+                "STN": doc["station_id"],
+                "station_name": doc["station_name"],
+                "lat": doc["lat"],
+                "lon": doc["lon"],
+                "avg_wind_speed": doc["metrics"]["avg_wind_speed"],
+                "vector_wind_speed": doc["metrics"]["vector_wind_speed"],
+                "max_hourly_wind": doc["metrics"]["max_hourly_wind"],
+                "max_gust_speed": doc["metrics"]["max_gust_speed"]
+            })
+        df_stations = pd.DataFrame(flat_st)
+        print(f"✅ Successfully loaded {len(df_stations)} weather stations from MongoDB.")
         
-        # Pre-calculate colors for the heatmap (avoids per-request overhead)
-        df_grid['suitability_color'] = df_grid.apply(
-            lambda row: get_suitability_color(row['ml_suitability_score'], int(row['is_natura2000'])),
-            axis=1
-        )
-
-        grid_coords = df_grid[['cell_lat', 'cell_lon']].values
-        wind_kdtree = cKDTree(grid_coords)
-        print(f"✅ Successfully loaded {len(df_grid)} smart grid points with colors.")
-    else:
-        print("⚠️ WARNING: Grid file not found!")
+        # 2. Load Grid Cells from MongoDB grid_cells collection
+        print("⏳ Loading smart grid cells from MongoDB...")
+        cursor_grid = db[MONGO_GRID_COLLECTION].find()
+        flat_grid = []
+        for doc in cursor_grid:
+            flat_grid.append({
+                "cell_lon": doc["cell_lon"],
+                "cell_lat": doc["cell_lat"],
+                "wind_speed": doc["features"]["wind_speed"],
+                "is_natura2000": doc["features"]["is_natura2000"],
+                "dist_to_nearest_turbine_m": doc["features"]["dist_to_nearest_turbine_m"],
+                "population_density": doc["features"]["population_density"],
+                "wind_score": doc["scores"]["wind_score"],
+                "population_score": doc["scores"]["population_score"],
+                "infrastructure_score": doc["scores"]["infrastructure_score"],
+                "natura_score": doc["scores"]["natura_score"],
+                "ml_suitability_score": doc["scores"]["ml_suitability_score"],
+                "kmeans_cluster": doc["kmeans"]["cluster"],
+                "kmeans_label": doc["kmeans"]["label"],
+                "kmeans_rank": doc["kmeans"]["rank"],
+                "ml_suitable": doc["kmeans"]["suitable"],
+                "suitability_color": doc["display"]["suitability_color"]
+            })
+        df_grid = pd.DataFrame(flat_grid)
+        
+        if len(df_grid) > 0:
+            grid_coords = df_grid[['cell_lat', 'cell_lon']].values
+            wind_kdtree = cKDTree(grid_coords)
+            print(f"✅ Successfully loaded {len(df_grid)} smart grid points from MongoDB with cKDTree.")
+        else:
+            print("⚠️ WARNING: No grid points found in MongoDB! Trying filesystem fallback...")
+            raise Exception("Grid cells collection is empty")
+            
+    except Exception as e:
+        print(f"⚠️ ERROR connecting to MongoDB or loading data: {e}")
+        print("🔄 Falling back to local file system...")
+        
+        base_dir = Path(__file__).resolve().parent.parent
+        stations_path = base_dir / "data" / "processed" / "knmi_stations_summary.csv"
+        
+        # Determine the best comparison dataset as fallback
+        rf_path = base_dir / "data" / "processed" / "random_forest_comparison_full.csv"
+        kmeans_path = base_dir / "data" / "processed" / "ml_dataset_kmeans_full.csv"
+        grid_path = rf_path if rf_path.exists() else kmeans_path
+        
+        if stations_path.exists():
+            df_stations = pd.read_csv(stations_path)
+            print(f"✅ Successfully loaded {len(df_stations)} weather stations (fallback).")
+        else:
+            print("⚠️ WARNING: Fallback stations file not found!")
+            df_stations = pd.DataFrame()
+            
+        if grid_path.exists():
+            df_grid = pd.read_csv(grid_path)
+            df_grid['ml_suitable'] = df_grid['ml_suitability_score'] >= 60.0
+            
+            # Override/Calculate color if needed
+            if 'suitability_color' not in df_grid.columns:
+                df_grid['suitability_color'] = df_grid.apply(
+                    lambda row: get_suitability_color(row['ml_suitability_score'], int(row['is_natura2000'])),
+                    axis=1
+                )
+                
+            grid_coords = df_grid[['cell_lat', 'cell_lon']].values
+            wind_kdtree = cKDTree(grid_coords)
+            print(f"✅ Successfully loaded {len(df_grid)} grid points from {grid_path.name} (fallback).")
+        else:
+            print("⚠️ WARNING: Fallback grid file not found!")
+            df_grid = pd.DataFrame()
 
 
 # --- REQUEST SCHEMAS (Pydantic) ---
@@ -100,15 +178,53 @@ class EvaluateRequest(BaseModel):
 
 @app.get("/api/v1/stations", tags=["Stations"])
 async def get_all_stations():
-    """Returns a list of all KNMI weather stations."""
-    if df_stations is None:
+    """Returns a list of all KNMI weather stations directly from MongoDB (or fallback in-memory)."""
+    global df_stations
+    if db_client is not None:
+        try:
+            cursor = db_client[MONGO_DB][MONGO_STATIONS_COLLECTION].find()
+            stations = []
+            for doc in cursor:
+                stations.append({
+                    "STN": doc["station_id"],
+                    "station_name": doc["station_name"],
+                    "lat": doc["lat"],
+                    "lon": doc["lon"],
+                    "avg_wind_speed": doc["metrics"]["avg_wind_speed"],
+                    "vector_wind_speed": doc["metrics"]["vector_wind_speed"],
+                    "max_hourly_wind": doc["metrics"]["max_hourly_wind"],
+                    "max_gust_speed": doc["metrics"]["max_gust_speed"]
+                })
+            return stations
+        except Exception as e:
+            print(f"⚠️ MongoDB Stations query failed: {e}. Falling back to memory.")
+            
+    if df_stations is None or df_stations.empty:
         raise HTTPException(status_code=500, detail="Station data not loaded")
     return df_stations.to_dict(orient="records")
 
 @app.get("/api/v1/stations/{station_id}", tags=["Stations"])
 async def get_station_by_id(station_id: int):
-    """Returns detailed information for a specific station (by STN)."""
-    if df_stations is None:
+    """Returns detailed information for a specific station (directly from MongoDB or fallback)."""
+    global df_stations
+    if db_client is not None:
+        try:
+            doc = db_client[MONGO_DB][MONGO_STATIONS_COLLECTION].find_one({"station_id": station_id})
+            if doc:
+                return {
+                    "STN": doc["station_id"],
+                    "station_name": doc["station_name"],
+                    "lat": doc["lat"],
+                    "lon": doc["lon"],
+                    "avg_wind_speed": doc["metrics"]["avg_wind_speed"],
+                    "vector_wind_speed": doc["metrics"]["vector_wind_speed"],
+                    "max_hourly_wind": doc["metrics"]["max_hourly_wind"],
+                    "max_gust_speed": doc["metrics"]["max_gust_speed"]
+                }
+        except Exception as e:
+            print(f"⚠️ MongoDB Station by id failed: {e}. Falling back to memory.")
+
+    if df_stations is None or df_stations.empty:
         raise HTTPException(status_code=500, detail="Station data not loaded")
     
     station = df_stations[df_stations['STN'] == station_id]
@@ -124,16 +240,14 @@ async def get_station_by_id(station_id: int):
 
 @app.get("/api/v1/wind/point", tags=["Environment Data"])
 async def get_environment_at_point(lat: float, lon: float):
-    """Searches for the nearest cell in the ML dataset and returns all its characteristics."""
-    if df_grid is None or wind_kdtree is None:
+    """Searches for the nearest cell in the dataset and returns all its characteristics."""
+    if df_grid is None or df_grid.empty or wind_kdtree is None:
         raise HTTPException(status_code=500, detail="Grid not loaded")
     
     # Search for the nearest point (k=1)
     distance, index = wind_kdtree.query([lat, lon], k=1)
     
-    # 0.08 degrees (approx. 8.8 km). 
-    # This provides a balance: easy to click coastline points, 
-    # but still restricts distant clicks from showing assessment popups.
+    # 0.08 degrees (approx. 8.8 km)
     if distance > 0.08: 
         return {
             "requested_lat": lat,
@@ -162,9 +276,9 @@ async def get_environment_at_point(lat: float, lon: float):
         "ml_suitability_score": round(float(point["ml_suitability_score"]), 2),
         "suitability_color": str(point["suitability_color"]),
         "ml_suitable": bool(point["ml_suitable"]),
-        "kmeans_cluster": int(point["kmeans_cluster"]),
-        "kmeans_label": str(point["kmeans_label"]),
-        "kmeans_rank": int(point["kmeans_rank"]),
+        "kmeans_cluster": int(point["kmeans_cluster"]) if pd.notna(point["kmeans_cluster"]) else None,
+        "kmeans_label": str(point["kmeans_label"]) if pd.notna(point["kmeans_label"]) else None,
+        "kmeans_rank": int(point["kmeans_rank"]) if pd.notna(point["kmeans_rank"]) else None,
 
         "distance_deg": round(distance, 4)
     }
@@ -172,10 +286,9 @@ async def get_environment_at_point(lat: float, lon: float):
 @app.get("/api/v1/wind/all", tags=["Environment Data"])
 async def get_all_environment_data():
     """Returns the entire grid (for Heatmap rendering on the frontend)."""
-    if df_grid is None:
+    if df_grid is None or df_grid.empty:
         raise HTTPException(status_code=500, detail="Grid not loaded")
     
-    # Return all 17,148 points at once
     return df_grid.to_dict(orient="records")
 
 
@@ -186,8 +299,40 @@ async def get_environment_bbox(
     min_lon: float = Query(..., description="Left bound (West)"),
     max_lon: float = Query(..., description="Right bound (East)")
 ):
-    """Returns all grid points within a specified bounding box."""
-    if df_grid is None:
+    """Returns all grid points within a specified bounding box directly from MongoDB (or fallback memory)."""
+    global df_grid
+    if db_client is not None:
+        try:
+            query = {
+                "cell_lat": {"$gte": min_lat, "$lte": max_lat},
+                "cell_lon": {"$gte": min_lon, "$lte": max_lon}
+            }
+            cursor = db_client[MONGO_DB][MONGO_GRID_COLLECTION].find(query)
+            subset = []
+            for doc in cursor:
+                subset.append({
+                    "cell_lon": doc["cell_lon"],
+                    "cell_lat": doc["cell_lat"],
+                    "wind_speed": doc["features"]["wind_speed"],
+                    "is_natura2000": doc["features"]["is_natura2000"],
+                    "dist_to_nearest_turbine_m": doc["features"]["dist_to_nearest_turbine_m"],
+                    "population_density": doc["features"]["population_density"],
+                    "wind_score": doc["scores"]["wind_score"],
+                    "population_score": doc["scores"]["population_score"],
+                    "infrastructure_score": doc["scores"]["infrastructure_score"],
+                    "natura_score": doc["scores"]["natura_score"],
+                    "ml_suitability_score": doc["scores"]["ml_suitability_score"],
+                    "kmeans_cluster": doc["kmeans"]["cluster"],
+                    "kmeans_label": doc["kmeans"]["label"],
+                    "kmeans_rank": doc["kmeans"]["rank"],
+                    "ml_suitable": doc["kmeans"]["suitable"],
+                    "suitability_color": doc["display"]["suitability_color"]
+                })
+            return subset
+        except Exception as e:
+            print(f"⚠️ MongoDB bounding box failed: {e}. Falling back to memory.")
+            
+    if df_grid is None or df_grid.empty:
         raise HTTPException(status_code=500, detail="Grid not loaded")
     
     mask = (
@@ -286,3 +431,28 @@ async def evaluate_location(request: EvaluateRequest):
         "warnings": warnings,
         "environment": env
     }
+
+
+# ==========================================
+# 5. GROUP: MODEL METADATA & REPORTS
+# ==========================================
+
+@app.get("/api/v1/model-runs/latest", tags=["Model Runs"])
+async def get_latest_model_run():
+    """Returns the latest model run metadata directly from MongoDB."""
+    if db_client is not None:
+        try:
+            doc = db_client[MONGO_DB][MONGO_MODEL_RUNS_COLLECTION].find_one(
+                sort=[("timestamp", -1)]
+            )
+            if doc:
+                doc.pop("_id", None)
+                return doc
+            else:
+                raise HTTPException(status_code=404, detail="No model runs found in MongoDB")
+        except HTTPException as he:
+            raise he
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Database error: {e}")
+            
+    raise HTTPException(status_code=501, detail="MongoDB is offline. Model metadata not available.")

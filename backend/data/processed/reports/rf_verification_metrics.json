@@ -1,0 +1,10 @@
+{
+    "accuracy": 0.9935860058309038,
+    "precision_macro": 0.9929656836155497,
+    "recall_macro": 0.9944468249241878,
+    "f1_score_macro": 0.9936884878360487,
+    "precision_weighted": 0.9935947202445822,
+    "recall_weighted": 0.9935860058309038,
+    "f1_score_weighted": 0.9935785957372572,
+    "roc_auc_weighted_ovr": 0.9999304617522122
+}
