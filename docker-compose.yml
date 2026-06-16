@@ -1,0 +1,22 @@
+services:
+  backend:
+    build: ./backend
+    container_name: wind_backend
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGO_URI=mongodb+srv://admin_user:jIdclpFqQhOVvhHb@cluster0.346pghw.mongodb.net/?appName=Cluster0
+
+  frontend:
+    build: ./frontendnpx
+    container_name: wind_frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    volumes:
+      - ./frontendnpx:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - backend
