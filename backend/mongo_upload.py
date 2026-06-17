@@ -242,6 +242,9 @@ def main():
     print("  - Creating compound index: 'display.ml_suitable' + 'scores.ml_suitability_score' on grid_cells")
     grid_col.create_index([("display.ml_suitable", ASCENDING), ("scores.ml_suitability_score", DESCENDING)])
     
+    print("  - Creating compound index: 'display.very_suitable' + 'scores.ml_suitability_score' on grid_cells")
+    grid_col.create_index([("display.very_suitable", ASCENDING), ("scores.ml_suitability_score", DESCENDING)])
+    
     print("  - Creating index: 'features.is_natura2000' on grid_cells")
     grid_col.create_index([("features.is_natura2000", ASCENDING)])
     

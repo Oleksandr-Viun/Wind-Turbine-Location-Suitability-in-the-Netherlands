@@ -388,6 +388,274 @@ async def get_exclusion_zones():
 
 
 # ==========================================
+# 3.5 GROUP: TOP CANDIDATE LOCATIONS / TIERS
+# NOTE: This feature provides a ranked candidate list for stakeholder exploration.
+# It does not mean the listed points are legally approved turbine sites.
+# It is a screening tool that highlights grid cells for further investigation.
+# ==========================================
+
+def haversine_distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Calculates the great-circle distance between two points in meters using Haversine formula."""
+    import math
+    R = 6371000.0 # Earth's radius in meters
+    
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    delta_phi = math.radians(lat2 - lat1)
+    delta_lambda = math.radians(lon2 - lon1)
+    
+    a = math.sin(delta_phi / 2.0)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2.0)**2
+    c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+    
+    return R * c
+
+def generate_short_reason(wind_speed: float, pop_density: float, dist_turbine: float) -> str:
+    """Generates a dynamic semantic reason why this cell is a top suitability candidate."""
+    if wind_speed >= 6.5 and pop_density < 30:
+        return "Excellent winds with sparse residential density."
+    elif wind_speed >= 6.0 and dist_turbine < 2500:
+        return "Strong wind potential & close proximity to proven turbine grid."
+    elif pop_density < 5:
+        return "Sparsely populated land with optimal wind support."
+    elif wind_speed >= 6.0:
+        return "Strong wind resources & highly suitable topographical layout."
+    else:
+        return "Balanced ecological, societal, and mechanical candidacy."
+
+
+@app.get("/api/v1/suitability/tiers", tags=["Suitability Candidates"])
+async def get_suitability_tiers():
+    """Returns dynamic counts of grid cells per suitability tier applying Natura 2000 exclusion first."""
+    global df_grid, db_client
+    
+    if db_client is not None:
+        try:
+            db = db_client[MONGO_DB]
+            pipeline = [
+                {
+                    "$project": {
+                        "tier": {
+                            "$cond": [
+                                {"$eq": ["$features.is_natura2000", 1]}, "Excluded",
+                                {
+                                    "$cond": [
+                                        {"$lt": ["$scores.ml_suitability_score", 40.0]}, "Low",
+                                        {
+                                            "$cond": [
+                                                {"$lt": ["$scores.ml_suitability_score", 60.0]}, "Medium",
+                                                {
+                                                    "$cond": [
+                                                        {"$lt": ["$scores.ml_suitability_score", 70.0]}, "Suitable",
+                                                        "Very Suitable"
+                                                    ]
+                                                }
+                                            ]
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "$group": {
+                        "_id": "$tier",
+                        "count": {"$sum": 1}
+                    }
+                }
+            ]
+            results = list(db[MONGO_GRID_COLLECTION].aggregate(pipeline))
+            counts = {r["_id"]: r["count"] for r in results}
+            
+            tier_list = ["Excluded", "Low", "Medium", "Suitable", "Very Suitable"]
+            tiers_data = [{"tier": t, "count": counts.get(t, 0)} for t in tier_list]
+            total_cells = sum(counts.values())
+            
+            return {
+                "total_cells": total_cells,
+                "tiers": tiers_data
+            }
+        except Exception as e:
+            print(f"⚠️ MongoDB tiers aggregation failed: {e}. Falling back to Pandas.")
+            
+    # Fallback to loaded in-memory DataFrame
+    if df_grid is None or df_grid.empty:
+        raise HTTPException(status_code=500, detail="Suitability grid dataset not loaded")
+        
+    df = df_grid.copy()
+    
+    # Standardize column naming for both full or backend DataFrame formats
+    score_col = "ml_suitability_score" if "ml_suitability_score" in df.columns else "scores.ml_suitability_score"
+    natura_col = "is_natura2000" if "is_natura2000" in df.columns else "features.is_natura2000"
+    
+    def classify_tier(row):
+        if int(row[natura_col]) == 1:
+            return "Excluded"
+        score = float(row[score_col])
+        if score < 40.0:
+            return "Low"
+        elif score < 60.0:
+            return "Medium"
+        elif score < 70.0:
+            return "Suitable"
+        else:
+            return "Very Suitable"
+            
+    df["tier"] = df.apply(classify_tier, axis=1)
+    counts = df["tier"].value_counts().to_dict()
+    
+    tier_list = ["Excluded", "Low", "Medium", "Suitable", "Very Suitable"]
+    tiers_data = [{"tier": t, "count": counts.get(t, 0)} for t in tier_list]
+    
+    return {
+        "total_cells": len(df),
+        "tiers": tiers_data
+    }
+
+
+@app.get("/api/v1/suitability/top", tags=["Suitability Candidates"])
+async def get_top_candidates(
+    limit: int = 20,
+    min_score: float = 60.0,
+    min_lat: Optional[float] = None,
+    max_lat: Optional[float] = None,
+    min_lon: Optional[float] = None,
+    max_lon: Optional[float] = None,
+    diverse: bool = True,
+    min_distance_m: float = 1500.0
+):
+    """
+    Returns sorted top candidate locations.
+    Applies spatial diversity pruning (via Haversine metric) to distribute spots.
+    """
+    global df_grid, db_client
+    
+    raw_candidates = []
+    
+    # 1. MongoDB Query
+    if db_client is not None:
+        try:
+            db = db_client[MONGO_DB]
+            query = {
+                "features.is_natura2000": 0,
+                "scores.ml_suitability_score": {"$gte": min_score}
+            }
+            if min_lat is not None and max_lat is not None:
+                query["cell_lat"] = {"$gte": min_lat, "$lte": max_lat}
+            if min_lon is not None and max_lon is not None:
+                query["cell_lon"] = {"$gte": min_lon, "$lte": max_lon}
+                
+            # If diverse, we fetch more candidate rows to leave room for spatial pruning
+            fetch_limit = 500 if diverse else limit
+            cursor = db[MONGO_GRID_COLLECTION].find(query).sort([("scores.ml_suitability_score", -1)]).limit(fetch_limit)
+            
+            for doc in cursor:
+                raw_candidates.append({
+                    "cell_lon": float(doc["cell_lon"]),
+                    "cell_lat": float(doc["cell_lat"]),
+                    "ml_suitability_score": float(doc["scores"]["ml_suitability_score"]),
+                    "kmeans_label": str(doc["kmeans"]["label"]),
+                    "kmeans_rank": int(doc["kmeans"]["rank"]),
+                    "rf_empirical_probability": float(doc["random_forest"]["empirical_probability"]) if doc["random_forest"].get("empirical_probability") is not None else 0.0,
+                    "rf_empirical_label": str(doc["random_forest"]["empirical_label"]) if doc["random_forest"].get("empirical_label") is not None else "Low Siting Probability",
+                    "wind_speed": float(doc["features"]["wind_speed"]),
+                    "population_density": float(doc["features"]["population_density"]),
+                    "dist_to_nearest_turbine_m": float(doc["features"]["dist_to_nearest_turbine_m"]),
+                    "is_natura2000": int(doc["features"]["is_natura2000"]),
+                    "suitability_color": str(doc["display"]["suitability_color"]),
+                    "very_suitable": bool(doc["display"]["very_suitable"])
+                })
+        except Exception as e:
+            print(f"⚠️ MongoDB top candidates query failed: {e}. Trying CSV fallback.")
+            raw_candidates = []
+            
+    # 2. Local Pandas Fallback (if raw_candidates is empty due to DB offline or failure)
+    if not raw_candidates:
+        if df_grid is None or df_grid.empty:
+            raise HTTPException(status_code=500, detail="Grid dataset not loaded")
+            
+        df = df_grid.copy()
+        
+        # Mapping possible flat CSV headers cleanly
+        score_col = "ml_suitability_score" if "ml_suitability_score" in df.columns else "scores.ml_suitability_score"
+        natura_col = "is_natura2000" if "is_natura2000" in df.columns else "features.is_natura2000"
+        wind_col = "wind_speed" if "wind_speed" in df.columns else "features.wind_speed"
+        pop_col = "population_density" if "population_density" in df.columns else "features.population_density"
+        dist_col = "dist_to_nearest_turbine_m" if "dist_to_nearest_turbine_m" in df.columns else "features.dist_to_nearest_turbine_m"
+        color_col = "suitability_color" if "suitability_color" in df.columns else "display.suitability_color"
+        very_suitable_col = "very_suitable" if "very_suitable" in df.columns else "display.very_suitable"
+        
+        # Optional RF / KMeans fallback checks
+        kmeans_label_col = "kmeans_label" if "kmeans_label" in df.columns else "kmeans_label" # Or default
+        rf_prob_col = "rf_empirical_probability" if "rf_empirical_probability" in df.columns else "random_forest_probability"
+        
+        # Apply filters
+        df_filtered = df[(df[natura_col] == 0) & (df[score_col] >= min_score)].copy()
+        if min_lat is not None and max_lat is not None:
+            df_filtered = df_filtered[(df_filtered["cell_lat"] >= min_lat) & (df_filtered["cell_lat"] <= max_lat)]
+        if min_lon is not None and max_lon is not None:
+            df_filtered = df_filtered[(df_filtered["cell_lon"] >= min_lon) & (df_filtered["cell_lon"] <= max_lon)]
+            
+        df_sorted = df_filtered.sort_values(by=score_col, ascending=False)
+        fetch_limit = 500 if diverse else limit
+        df_subset = df_sorted.head(fetch_limit)
+        
+        for _, row in df_subset.iterrows():
+            raw_candidates.append({
+                "cell_lon": float(row["cell_lon"]),
+                "cell_lat": float(row["cell_lat"]),
+                "ml_suitability_score": float(row[score_col]),
+                "kmeans_label": str(row.get(kmeans_label_col, "High ML suitability" if row[score_col] >= 60 else "Medium ML suitability")),
+                "kmeans_rank": int(row.get("kmeans_rank", 3 if row[score_col] >= 60 else 2)),
+                "rf_empirical_probability": float(row.get(rf_prob_col, 0.5)),
+                "rf_empirical_label": "High Siting Probability" if float(row.get(rf_prob_col, 0.5)) >= 0.5 else "Low Siting Probability",
+                "wind_speed": float(row[wind_col]),
+                "population_density": float(row[pop_col]),
+                "dist_to_nearest_turbine_m": float(row[dist_col]),
+                "is_natura2000": int(row[natura_col]),
+                "suitability_color": str(row.get(color_col, "#22c55e")),
+                "very_suitable": bool(row[score_col] >= 70.0)
+            })
+
+    # 3. Apply Haversine Diversity Pruning
+    accepted = []
+    for cand in raw_candidates:
+        if len(accepted) >= limit:
+            break
+            
+        if not diverse:
+            accepted.append(cand)
+            continue
+            
+        # Check against existing accepted
+        too_close = False
+        for acc in accepted:
+            dist = haversine_distance_m(cand["cell_lat"], cand["cell_lon"], acc["cell_lat"], acc["cell_lon"])
+            if dist < min_distance_m:
+                too_close = True
+                break
+                
+        if not too_close:
+            accepted.append(cand)
+            
+    # Assign Ranks (1-based index) and inject dynamic reason
+    for i, cand in enumerate(accepted, 1):
+        cand["rank"] = i
+        cand["short_reason"] = generate_short_reason(
+            cand["wind_speed"], 
+            cand["population_density"], 
+            cand["dist_to_nearest_turbine_m"]
+        )
+        
+    return {
+        "scope": "bbox" if (min_lat is not None) else "global",
+        "limit": limit,
+        "min_score": min_score,
+        "candidates": accepted
+    }
+
+
+# ==========================================
 # 4. GROUP: BUSINESS LOGIC EVALUATION (Evaluate)
 # ==========================================
 

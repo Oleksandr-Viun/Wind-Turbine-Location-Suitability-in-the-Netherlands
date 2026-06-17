@@ -1,6 +1,6 @@
 "use client"; // Tells Next.js that this runs only in the browser
 
-import { MapContainer, TileLayer, Marker, Popup, useMapEvents, CircleMarker } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Popup, useMapEvents, CircleMarker, useMap } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 import { useState, useEffect } from "react";
@@ -47,6 +47,24 @@ interface WindPointDetails {
   error?: string;
 }
 
+interface CandidatePoint {
+  rank: number;
+  cell_lat: number;
+  cell_lon: number;
+  ml_suitability_score: number;
+  kmeans_label: string;
+  kmeans_rank: number;
+  rf_empirical_probability: number;
+  rf_empirical_label: string;
+  wind_speed: number;
+  population_density: number;
+  dist_to_nearest_turbine_m: number;
+  is_natura2000: number;
+  suitability_color: string;
+  very_suitable: boolean;
+  short_reason: string;
+}
+
 // --- LEAFLET ICON FIX FOR NEXT.JS ---
 const DefaultIcon = L.icon({
   iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
@@ -73,6 +91,7 @@ interface MapClickProps {
   setClickPos: (pos: { lat: number; lng: number } | null) => void;
   setEvaluation: (evalResult: EvaluationResult | null) => void;
   setWindPointDetails: (details: WindPointDetails | null) => void;
+  setMapBbox: (bbox: { min_lat: number; max_lat: number; min_lon: number; max_lon: number } | null) => void;
 }
 
 // Map click handler component declared in parent scope to prevent render-creation warning
@@ -82,9 +101,10 @@ function MapClickHandler({
   selectedCountry,
   setClickPos,
   setEvaluation,
-  setWindPointDetails
+  setWindPointDetails,
+  setMapBbox
 }: MapClickProps) {
-  useMapEvents({
+  const map = useMapEvents({
     click: async (e) => {
       const { lat, lng } = e.latlng;
       setClickPos({ lat, lng });
@@ -114,7 +134,56 @@ function MapClickHandler({
         }
       }
     },
+    moveend: () => {
+      const bounds = map.getBounds();
+      setMapBbox({
+        min_lat: bounds.getSouth(),
+        max_lat: bounds.getNorth(),
+        min_lon: bounds.getWest(),
+        max_lon: bounds.getEast()
+      });
+    },
+    zoomend: () => {
+      const bounds = map.getBounds();
+      setMapBbox({
+        min_lat: bounds.getSouth(),
+        max_lat: bounds.getNorth(),
+        min_lon: bounds.getWest(),
+        max_lon: bounds.getEast()
+      });
+    }
   });
+
+  // Track initial bounds once map loads
+  useEffect(() => {
+    if (map) {
+      const bounds = map.getBounds();
+      setMapBbox({
+        min_lat: bounds.getSouth(),
+        max_lat: bounds.getNorth(),
+        min_lon: bounds.getWest(),
+        max_lon: bounds.getEast()
+      });
+    }
+  }, [map, setMapBbox]);
+
+  return null;
+}
+
+interface MapControllerProps {
+  selectedCandidate: { lat: number; lon: number } | null;
+}
+
+// Controller component to center and zoom map when candidate card is clicked
+function MapController({ selectedCandidate }: MapControllerProps) {
+  const map = useMap();
+  
+  useEffect(() => {
+    if (selectedCandidate) {
+      map.flyTo([selectedCandidate.lat, selectedCandidate.lon], 12);
+    }
+  }, [selectedCandidate, map]);
+  
   return null;
 }
 
@@ -133,6 +202,18 @@ export default function MapComponent() {
   const [windExplorerGrid, setWindExplorerGrid] = useState<WindExplorerPoint[]>([]);
   const [isLoadingWindGrid, setIsLoadingWindGrid] = useState(false);
   const [windPointDetails, setWindPointDetails] = useState<WindPointDetails | null>(null);
+
+  // --- TOP CANDIDATES / TIERS STATES ---
+  const [tierCounts, setTierCounts] = useState<{ total_cells: number; tiers: { tier: string; count: number }[] } | null>(null);
+  const [topCandidates, setTopCandidates] = useState<CandidatePoint[]>([]);
+  const [candidateScope, setCandidateScope] = useState<"global" | "mapView">("global");
+  const [candidateLimit, setCandidateLimit] = useState<number>(20);
+  const [candidateMinScore, setCandidateMinScore] = useState<number>(60);
+  const [candidateDiverse, setCandidateDiverse] = useState<boolean>(true);
+  const [mapBbox, setMapBbox] = useState<{ min_lat: number; max_lat: number; min_lon: number; max_lon: number } | null>(null);
+  const [isLoadingCandidates, setIsLoadingCandidates] = useState(false);
+  const [candidatesError, setCandidatesError] = useState<string | null>(null);
+  const [selectedCandidate, setSelectedCandidate] = useState<{ lat: number; lon: number } | null>(null);
 
   // 1. Load the list of weather stations (unconditionally, useful for both)
   useEffect(() => {
@@ -186,6 +267,78 @@ export default function MapComponent() {
 
     return () => clearTimeout(timer);
   }, [mode, explorerSubMode, selectedMonth, selectedCountry]);
+
+  // 3.5 Fetch Tiers Counts
+  useEffect(() => {
+    if (mode !== "suitability") return;
+    
+    fetch("http://127.0.0.1:8000/api/v1/suitability/tiers")
+      .then((res) => res.json())
+      .then((data) => setTierCounts(data))
+      .catch((err) => console.error("Error loading tiers counts:", err));
+  }, [mode]);
+
+  // 3.6 Fetch Top Candidate Locations (Global Scope)
+  useEffect(() => {
+    if (mode !== "suitability" || candidateScope !== "global") return;
+    
+    const timer = setTimeout(() => {
+      setIsLoadingCandidates(true);
+      setCandidatesError(null);
+    }, 0);
+    
+    const url = `http://127.0.0.1:8000/api/v1/suitability/top?limit=${candidateLimit}&min_score=${candidateMinScore}&diverse=${candidateDiverse}`;
+    
+    fetch(url)
+      .then((res) => {
+        if (!res.ok) {
+          throw new Error("Failed to fetch top candidates");
+        }
+        return res.json();
+      })
+      .then((data) => {
+        setTopCandidates(data.candidates || []);
+        setIsLoadingCandidates(false);
+      })
+      .catch((err) => {
+        console.error("Error loading top candidates:", err);
+        setCandidatesError("Candidates lookup unavailable");
+        setIsLoadingCandidates(false);
+      });
+
+    return () => clearTimeout(timer);
+  }, [mode, candidateScope, candidateLimit, candidateMinScore, candidateDiverse]);
+
+  // 3.7 Fetch Top Candidate Locations (Map View Scope)
+  useEffect(() => {
+    if (mode !== "suitability" || candidateScope !== "mapView" || !mapBbox) return;
+    
+    const timer = setTimeout(() => {
+      setIsLoadingCandidates(true);
+      setCandidatesError(null);
+    }, 0);
+    
+    const url = `http://127.0.0.1:8000/api/v1/suitability/top?limit=${candidateLimit}&min_score=${candidateMinScore}&diverse=${candidateDiverse}&min_lat=${mapBbox.min_lat}&max_lat=${mapBbox.max_lat}&min_lon=${mapBbox.min_lon}&max_lon=${mapBbox.max_lon}`;
+    
+    fetch(url)
+      .then((res) => {
+        if (!res.ok) {
+          throw new Error("Failed to fetch top candidates");
+        }
+        return res.json();
+      })
+      .then((data) => {
+        setTopCandidates(data.candidates || []);
+        setIsLoadingCandidates(false);
+      })
+      .catch((err) => {
+        console.error("Error loading top candidates:", err);
+        setCandidatesError("Candidates lookup unavailable");
+        setIsLoadingCandidates(false);
+      });
+
+    return () => clearTimeout(timer);
+  }, [mode, candidateScope, candidateLimit, candidateMinScore, candidateDiverse, mapBbox]);
 
   // Function to select point color based on its rating (Blue -> Green style)
   const getScoreColor = (score: number, isNatura: number) => {
@@ -262,6 +415,152 @@ export default function MapComponent() {
             </button>
           </div>
         </div>
+
+        {/* Section: Top Candidate Locations (Suitability View only) */}
+        {mode === "suitability" && (
+          <div className="mb-6 bg-blue-50/20 border border-blue-100 rounded-xl p-4 flex flex-col space-y-4 text-gray-800">
+            <div>
+              <h3 className="text-xs font-black text-blue-900 uppercase tracking-wider mb-2">Top Candidate Locations</h3>
+              
+              {/* Tiers Summary UI */}
+              {tierCounts && (
+                <div className="bg-white p-3 rounded-lg border border-gray-100/60 shadow-sm text-[11px] mb-3 space-y-1.5 font-bold">
+                  <div className="text-xs text-blue-900 border-b pb-1 font-black mb-1">Netherlands Suitability Tiers</div>
+                  <div className="flex justify-between items-center text-green-700">
+                    <span>🟢 Very Suitable (≥70):</span>
+                    <span>{tierCounts.tiers.find(t => t.tier === "Very Suitable")?.count || 0}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-lime-700">
+                    <span>🟢 Suitable (60-69):</span>
+                    <span>{tierCounts.tiers.find(t => t.tier === "Suitable")?.count || 0}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-blue-700">
+                    <span>🔵 Medium (40-59):</span>
+                    <span>{tierCounts.tiers.find(t => t.tier === "Medium")?.count || 0}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-indigo-700">
+                    <span>🔵 Low (&lt;40):</span>
+                    <span>{tierCounts.tiers.find(t => t.tier === "Low")?.count || 0}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-slate-500">
+                    <span>⚫ Excluded (Natura 2000):</span>
+                    <span>{tierCounts.tiers.find(t => t.tier === "Excluded")?.count || 0}</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Sidebar controls for Candidate Filtering */}
+              <div className="grid grid-cols-2 gap-2 mb-3">
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Scope</label>
+                  <select
+                    value={candidateScope}
+                    onChange={(e) => setCandidateScope(e.target.value as "global" | "mapView")}
+                    className="w-full text-xs border border-gray-200 rounded-md p-1.5 bg-white text-gray-800 font-bold focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  >
+                    <option value="global">Global (NL)</option>
+                    <option value="mapView">Current Map View</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Limit</label>
+                  <select
+                    value={candidateLimit}
+                    onChange={(e) => setCandidateLimit(Number(e.target.value))}
+                    className="w-full text-xs border border-gray-200 rounded-md p-1.5 bg-white text-gray-800 font-bold focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  >
+                    <option value={10}>Top 10</option>
+                    <option value={20}>Top 20</option>
+                    <option value={50}>Top 50</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 mb-3">
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Min Score</label>
+                  <select
+                    value={candidateMinScore}
+                    onChange={(e) => setCandidateMinScore(Number(e.target.value))}
+                    className="w-full text-xs border border-gray-200 rounded-md p-1.5 bg-white text-gray-800 font-bold focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  >
+                    <option value={60}>60+ (Suitable)</option>
+                    <option value={70}>70+ (Very Suitable)</option>
+                    <option value={80}>80+ (Excellent)</option>
+                  </select>
+                </div>
+                <div className="flex flex-col justify-end">
+                  <button
+                    onClick={() => setCandidateDiverse(prev => !prev)}
+                    className={`w-full py-1.5 rounded-md text-[11px] font-bold border transition ${
+                      candidateDiverse
+                        ? "bg-blue-50 border-blue-200 text-blue-700 shadow-sm"
+                        : "bg-white border-gray-200 text-gray-600"
+                    }`}
+                  >
+                    {candidateDiverse ? "✓ Diverse Mode" : "Cluster Mode"}
+                  </button>
+                </div>
+              </div>
+
+              <p className="text-[10px] text-gray-400 leading-tight italic bg-yellow-50/50 border border-yellow-100 p-2 rounded-md mb-3 font-semibold text-center">
+                “These are screening candidates, not legally approved turbine sites.”
+              </p>
+
+              {/* Render Candidates List */}
+              {isLoadingCandidates ? (
+                <div className="text-center text-xs text-blue-600 font-bold py-4 animate-pulse">⏳ Refreshing candidates list...</div>
+              ) : candidatesError ? (
+                <div className="text-center text-xs text-red-500 font-bold py-2 bg-red-50 border border-red-100 rounded">{candidatesError}</div>
+              ) : topCandidates.length === 0 ? (
+                <div className="text-center text-xs text-gray-400 font-bold py-4">No candidates meet the score criteria in this area.</div>
+              ) : (
+                <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
+                  {topCandidates.map((cand) => (
+                    <div
+                      key={`cand-${cand.rank}`}
+                      onClick={() => {
+                        setSelectedCandidate({ lat: cand.cell_lat, lon: cand.cell_lon });
+                        setClickPos({ lat: cand.cell_lat, lng: cand.cell_lon });
+                        // Re-trigger standard turbine evaluate popup on that coordinates
+                        fetch("http://127.0.0.1:8000/api/v1/turbines/evaluate", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ lat: cand.cell_lat, lon: cand.cell_lon, turbine_model: "Vestas_V164" }),
+                        })
+                          .then((res) => res.json())
+                          .then((data) => setEvaluation(data))
+                          .catch((err) => console.error("Candidate evaluate failed:", err));
+                      }}
+                      className="bg-white hover:bg-blue-50/50 border border-gray-150 p-2.5 rounded-lg shadow-sm cursor-pointer transition flex items-start gap-2 select-none"
+                    >
+                      <div className="bg-blue-600 text-white rounded-md text-[10px] font-black w-5 h-5 flex items-center justify-center shrink-0">
+                        {cand.rank}
+                      </div>
+                      <div className="flex-1 space-y-1 text-[11px] font-bold text-gray-700">
+                        <div className="flex justify-between items-center text-xs text-blue-900 font-black">
+                          <span>Point {cand.cell_lat.toFixed(3)}, {cand.cell_lon.toFixed(3)}</span>
+                          <span className="bg-green-100 text-green-800 text-[10px] font-extrabold px-1.5 py-0.5 rounded">
+                            {cand.ml_suitability_score.toFixed(1)}%
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-gray-500 font-semibold leading-relaxed">
+                          <b>K-Means:</b> {cand.kmeans_label} <br />
+                          <b>Wind Speed:</b> {cand.wind_speed.toFixed(2)} m/s <br />
+                          {cand.rf_empirical_probability > 0 && (
+                            <><b>RF Siting Probability:</b> {(cand.rf_empirical_probability * 105).toFixed(0)}% <br /></>
+                          )}
+                          <span className="text-blue-700 italic block mt-1">“{cand.short_reason}”</span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+            </div>
+          </div>
+        )}
 
         {/* Section: Controls (conditional based on mode) */}
         {mode === "windExplorer" && (
@@ -462,7 +761,9 @@ export default function MapComponent() {
             setClickPos={setClickPos}
             setEvaluation={setEvaluation}
             setWindPointDetails={setWindPointDetails}
+            setMapBbox={setMapBbox}
           />
+          <MapController selectedCandidate={selectedCandidate} />
 
           {/* 1. Draw Suitability Grid dots */}
           {mode === "suitability" && gridData.map((point, idx) => {

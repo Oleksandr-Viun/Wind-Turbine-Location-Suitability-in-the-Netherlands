@@ -76,6 +76,7 @@ class TestMongoDBIntegration(unittest.TestCase):
         self.assertTrue(has_index_on_keys(grid_indexes, [("cell_lat", 1), ("cell_lon", 1)]), "Missing '(cell_lat, cell_lon)' index on grid_cells!")
         self.assertTrue(has_index_on_keys(grid_indexes, [("scores.ml_suitability_score", -1)]), "Missing 'scores.ml_suitability_score' descending index on grid_cells!")
         self.assertTrue(has_index_on_keys(grid_indexes, [("display.ml_suitable", 1), ("scores.ml_suitability_score", -1)]), "Missing compound index on grid_cells!")
+        self.assertTrue(has_index_on_keys(grid_indexes, [("display.very_suitable", 1), ("scores.ml_suitability_score", -1)]), "Missing very_suitable compound index on grid_cells!")
         self.assertTrue(has_index_on_keys(grid_indexes, [("features.is_natura2000", 1)]), "Missing 'features.is_natura2000' index on grid_cells!")
         self.assertTrue(has_index_on_keys(grid_indexes, [("kmeans.label", 1)]), "Missing 'kmeans.label' index on grid_cells!")
         
