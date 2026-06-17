@@ -20,6 +20,8 @@ MONGO_DB = os.getenv("MONGO_DB", "wind_turbine_suitability")
 MONGO_GRID_COLLECTION = os.getenv("MONGO_GRID_COLLECTION", "grid_cells")
 MONGO_STATIONS_COLLECTION = os.getenv("MONGO_STATIONS_COLLECTION", "knmi_stations")
 MONGO_MODEL_RUNS_COLLECTION = os.getenv("MONGO_MODEL_RUNS_COLLECTION", "model_runs")
+MONGO_EXPLORER_NL_COLLECTION = os.getenv("MONGO_EXPLORER_NL_COLLECTION", "wind_explorer_netherlands")
+MONGO_EXPLORER_COUNTRIES_COLLECTION = os.getenv("MONGO_EXPLORER_COUNTRIES_COLLECTION", "wind_explorer_countries")
 
 # --- APP INITIALIZATION ---
 app = FastAPI(
@@ -62,11 +64,13 @@ df_grid = None
 wind_kdtree = None
 grid_coords = None
 db_client = None
+df_explorer_nl = None
+df_explorer_countries = None
 
 # --- LOAD DATA ON STARTUP ---
 @app.on_event("startup")
 async def load_data():
-    global df_stations, df_grid, wind_kdtree, grid_coords, db_client
+    global df_stations, df_grid, wind_kdtree, grid_coords, db_client, df_explorer_nl, df_explorer_countries
     
     print("⏳ Connecting to MongoDB...")
     try:
@@ -163,6 +167,22 @@ async def load_data():
         else:
             print("⚠️ WARNING: Fallback grid file not found!")
             df_grid = pd.DataFrame()
+
+    # Load Wind Explorer caches unconditionally for fallback support
+    base_dir = Path(__file__).resolve().parent.parent
+    explorer_nl_path = base_dir / "data" / "processed" / "wind_explorer_netherlands_processed.csv"
+    if explorer_nl_path.exists():
+        df_explorer_nl = pd.read_csv(explorer_nl_path)
+        print(f"✅ Loaded Netherlands wind explorer cache ({len(df_explorer_nl)} points).")
+    else:
+        print("⚠️ Netherlands wind explorer cache not found!")
+        
+    explorer_countries_path = base_dir / "data" / "processed" / "wind_explorer_countries_processed.csv"
+    if explorer_countries_path.exists():
+        df_explorer_countries = pd.read_csv(explorer_countries_path)
+        print(f"✅ Loaded Countries wind explorer cache ({len(df_explorer_countries)} points).")
+    else:
+        print("⚠️ Countries wind explorer cache not found!")
 
 
 # --- REQUEST SCHEMAS (Pydantic) ---
@@ -456,3 +476,223 @@ async def get_latest_model_run():
             raise HTTPException(status_code=500, detail=f"Database error: {e}")
             
     raise HTTPException(status_code=501, detail="MongoDB is offline. Model metadata not available.")
+
+
+# ==========================================
+# 6. GROUP: WIND EXPLORER MODE
+# ==========================================
+
+@app.get("/api/v1/wind-explorer/netherlands", tags=["Wind Explorer"])
+async def get_netherlands_wind_explorer(
+    month: str = Query("annual", description="Selected month: 'annual', or '1'-'12'"),
+    min_lat: Optional[float] = None,
+    max_lat: Optional[float] = None,
+    min_lon: Optional[float] = None,
+    max_lon: Optional[float] = None
+):
+    """Returns grid coordinates with either annual or monthly average wind speeds for the Netherlands."""
+    global df_explorer_nl, db_client
+    
+    # 1. Attempt MongoDB Query
+    if db_client is not None:
+        try:
+            db = db_client[MONGO_DB]
+            query = {}
+            if min_lat is not None and max_lat is not None:
+                query["cell_lat"] = {"$gte": min_lat, "$lte": max_lat}
+            if min_lon is not None and max_lon is not None:
+                query["cell_lon"] = {"$gte": min_lon, "$lte": max_lon}
+                
+            cursor = db[MONGO_EXPLORER_NL_COLLECTION].find(query)
+            points = []
+            for doc in cursor:
+                # Select the correct wind speed based on selected month parameter
+                if month == "annual":
+                    speed = doc.get("annual_wind_speed", 0.0)
+                else:
+                    speed = doc.get("monthly_wind_speed", {}).get(month, 0.0)
+                    
+                points.append({
+                    "cell_lon": doc["cell_lon"],
+                    "cell_lat": doc["cell_lat"],
+                    "wind_speed": round(speed, 3)
+                })
+            return points
+        except Exception as e:
+            print(f"⚠️ MongoDB Netherlands wind-explorer failed: {e}. Falling back to CSV.")
+            
+    # 2. Fallback to cached local Pandas dataframe
+    if df_explorer_nl is None or df_explorer_nl.empty:
+        raise HTTPException(status_code=500, detail="Netherlands Wind Explorer dataset not loaded")
+        
+    df_filtered = df_explorer_nl.copy()
+    
+    if min_lat is not None and max_lat is not None:
+        df_filtered = df_filtered[(df_filtered["cell_lat"] >= min_lat) & (df_filtered["cell_lat"] <= max_lat)]
+    if min_lon is not None and max_lon is not None:
+        df_filtered = df_filtered[(df_filtered["cell_lon"] >= min_lon) & (df_filtered["cell_lon"] <= max_lon)]
+        
+    points = []
+    col_name = "annual_wind_speed" if month == "annual" else f"month_{month}"
+    
+    if col_name not in df_filtered.columns:
+        raise HTTPException(status_code=400, detail=f"Invalid month value: {month}")
+        
+    for _, row in df_filtered.iterrows():
+        points.append({
+            "cell_lon": float(row["cell_lon"]),
+            "cell_lat": float(row["cell_lat"]),
+            "wind_speed": round(float(row[col_name]), 3)
+        })
+        
+    return points
+
+
+@app.get("/api/v1/wind-explorer/country", tags=["Wind Explorer"])
+async def get_country_wind_explorer(
+    country: str = Query(..., description="Country name, e.g. 'Denmark', 'Scotland', 'France', 'Ireland'"),
+    min_lat: Optional[float] = None,
+    max_lat: Optional[float] = None,
+    min_lon: Optional[float] = None,
+    max_lon: Optional[float] = None
+):
+    """Returns grid coordinates with annual average wind speeds for the requested country."""
+    global df_explorer_countries, db_client
+    
+    country_clean = country.strip().capitalize()
+    
+    if country_clean == "Netherlands":
+        return await get_netherlands_wind_explorer(month="annual", min_lat=min_lat, max_lat=max_lat, min_lon=min_lon, max_lon=max_lon)
+    
+    # 1. Attempt MongoDB Query
+    if db_client is not None:
+        try:
+            db = db_client[MONGO_DB]
+            query = {"country": {"$regex": f"^{country_clean}$", "$options": "i"}}
+            if min_lat is not None and max_lat is not None:
+                query["cell_lat"] = {"$gte": min_lat, "$lte": max_lat}
+            if min_lon is not None and max_lon is not None:
+                query["cell_lon"] = {"$gte": min_lon, "$lte": max_lon}
+                
+            cursor = db[MONGO_EXPLORER_COUNTRIES_COLLECTION].find(query)
+            points = []
+            for doc in cursor:
+                points.append({
+                    "cell_lon": doc["cell_lon"],
+                    "cell_lat": doc["cell_lat"],
+                    "wind_speed": round(doc["annual_wind_speed"], 3)
+                })
+            return points
+        except Exception as e:
+            print(f"⚠️ MongoDB Country wind-explorer failed: {e}. Falling back to CSV.")
+            
+    # 2. Fallback to cached local Pandas dataframe
+    if df_explorer_countries is None or df_explorer_countries.empty:
+        raise HTTPException(status_code=500, detail="Countries Wind Explorer dataset not loaded")
+        
+    df_filtered = df_explorer_countries[df_explorer_countries["country"].str.lower() == country_clean.lower()].copy()
+    
+    if min_lat is not None and max_lat is not None:
+        df_filtered = df_filtered[(df_filtered["cell_lat"] >= min_lat) & (df_filtered["cell_lat"] <= max_lat)]
+    if min_lon is not None and max_lon is not None:
+        df_filtered = df_filtered[(df_filtered["cell_lon"] >= min_lon) & (df_filtered["cell_lon"] <= max_lon)]
+        
+    points = []
+    for _, row in df_filtered.iterrows():
+        points.append({
+            "cell_lon": float(row["cell_lon"]),
+            "cell_lat": float(row["cell_lat"]),
+            "wind_speed": round(float(row["annual_wind_speed"]), 3)
+        })
+        
+    return points
+
+
+@app.get("/api/v1/wind-explorer/point", tags=["Wind Explorer"])
+async def get_wind_explorer_point_details(
+    lat: float,
+    lon: float,
+    mode: str = Query("netherlands", description="'netherlands' or 'country'"),
+    country: Optional[str] = None
+):
+    """Retrieves the wind speed of the grid cell nearest to the requested coordinates."""
+    global df_explorer_nl, df_explorer_countries, db_client
+    
+    # 1. MongoDB $near spatial query
+    if db_client is not None:
+        try:
+            db = db_client[MONGO_DB]
+            collection_name = MONGO_EXPLORER_NL_COLLECTION if mode == "netherlands" else MONGO_EXPLORER_COUNTRIES_COLLECTION
+            
+            query = {}
+            if mode == "country" and country:
+                query["country"] = {"$regex": f"^{country.strip()}$", "$options": "i"}
+                
+            query["location"] = {
+                "$near": {
+                    "$geometry": {
+                        "type": "Point",
+                        "coordinates": [lon, lat]
+                    },
+                    "$maxDistance": 50000 # 50km threshold
+                }
+            }
+            
+            doc = db[collection_name].find_one(query)
+            if doc:
+                if mode == "netherlands":
+                    return {
+                        "lat": doc["cell_lat"],
+                        "lon": doc["cell_lon"],
+                        "annual_wind_speed": doc["annual_wind_speed"],
+                        "monthly_wind_speed": doc["monthly_wind_speed"]
+                    }
+                else:
+                    return {
+                        "lat": doc["cell_lat"],
+                        "lon": doc["cell_lon"],
+                        "country": doc["country"],
+                        "annual_wind_speed": doc["annual_wind_speed"]
+                    }
+        except Exception as e:
+            print(f"⚠️ MongoDB nearest spatial query failed: {e}. Falling back to distance math.")
+            
+    # 2. Local Pandas fallback KD-Tree/Math
+    df_target = None
+    if mode == "netherlands":
+        df_target = df_explorer_nl
+    else:
+        if df_explorer_countries is not None and country:
+            df_target = df_explorer_countries[df_explorer_countries["country"].str.lower() == country.strip().lower()]
+        else:
+            df_target = df_explorer_countries
+            
+    if df_target is None or df_target.empty:
+        raise HTTPException(status_code=500, detail="Requested Wind Explorer Fallback dataset is empty")
+        
+    # Find nearest point using simple Euclidean distance (fine for small local grids)
+    coords = df_target[["cell_lat", "cell_lon"]].values
+    distances = np.sum((coords - np.array([lat, lon]))**2, axis=1)
+    min_idx = np.argmin(distances)
+    
+    # Approx 50km check in degrees (0.5 degree)
+    if distances[min_idx] > 0.25:
+        raise HTTPException(status_code=404, detail="Coordinates are too far from the existing data grid")
+        
+    row = df_target.iloc[min_idx]
+    
+    if mode == "netherlands":
+        monthly = {str(m): float(row[f"month_{m}"]) for m in range(1, 13)}
+        return {
+            "lat": float(row["cell_lat"]),
+            "lon": float(row["cell_lon"]),
+            "annual_wind_speed": float(row["annual_wind_speed"]),
+            "monthly_wind_speed": monthly
+        }
+    else:
+        return {
+            "lat": float(row["cell_lat"]),
+            "lon": float(row["cell_lon"]),
+            "country": str(row["country"]),
+            "annual_wind_speed": float(row["annual_wind_speed"])
+        }
