@@ -217,6 +217,8 @@ export default function MapComponent() {
   const [isLoadingCandidates, setIsLoadingCandidates] = useState(false);
   const [candidatesError, setCandidatesError] = useState<string | null>(null);
   const [selectedCandidate, setSelectedCandidate] = useState<{ lat: number; lon: number } | null>(null);
+  // mobile legenda
+  const [isLegendOpen, setIsLegendOpen] = useState(false);
 
   // 1. Load the list of weather stations
   useEffect(() => {
@@ -707,39 +709,51 @@ export default function MapComponent() {
         )}
 
         {/* Legend overlay */}
-        <div className="absolute bottom-4 right-4 z-[1000] bg-white p-3.5 rounded-xl shadow-lg border border-gray-100 max-w-xs text-xs text-gray-800 font-medium select-none">
-          {mode === "suitability" ? (
-            <div>
-              <h4 className="font-bold text-blue-900 mb-2 border-b border-gray-100 pb-1 text-sm">Suitability Rating</h4>
-              <div className="space-y-1.5">
-                <div className="flex items-center"><span className="w-3.5 h-3.5 rounded-full mr-2 bg-[#15803d]" />Excellent (≥80%)</div>
-                <div className="flex items-center"><span className="w-3.5 h-3.5 rounded-full mr-2 bg-[#22c55e]" />Very Good (70-79%)</div>
-                <div className="flex items-center"><span className="w-3.5 h-3.5 rounded-full mr-2 bg-[#84cc16]" />Good (60-69%)</div>
-                <div className="flex items-center"><span className="w-3.5 h-3.5 rounded-full mr-2 bg-[#14b8a6]" />Average (50-59%)</div>
-                <div className="flex items-center"><span className="w-3.5 h-3.5 rounded-full mr-2 bg-[#0ea5e9]" />Moderate (40-49%)</div>
-                <div className="flex items-center"><span className="w-3.5 h-3.5 rounded-full mr-2 bg-[#2563eb]" />Poor (25-39%)</div>
-                <div className="flex items-center"><span className="w-3.5 h-3.5 rounded-full mr-2 bg-[#1e3a8a]" />Very Poor (&lt;25%)</div>
-                <div className="flex items-center border-t border-gray-100 pt-1.5 mt-1.5"><span className="w-3.5 h-3.5 rounded-full mr-2 bg-[#64748b]" />Natura 2000 (Protected)</div>
-                <div className="flex items-center mt-1"><span className="w-3.5 h-3.5 border border-white outline outline-1 outline-blue-400 rounded-full mr-2 bg-green-500" />Border = Highly Suitable</div>
+        <div className="absolute bottom-4 right-2 md:right-4 z-[1000] flex flex-col items-end">
+          
+          {/* Кнопка-переключатель (Видна ТОЛЬКО на мобилках благодаря md:hidden) */}
+          <button 
+            onClick={() => setIsLegendOpen(!isLegendOpen)}
+            className="md:hidden mb-2 bg-white px-3 py-2 rounded-lg shadow-md border border-gray-200 text-xs font-bold text-blue-900 flex items-center gap-1.5 active:bg-gray-50"
+          >
+            {isLegendOpen ? "▼ Hide Legend" : "▲ Show Legend"}
+          </button>
+
+          {/* Сама Легенда (Скрыта на мобилках по умолчанию, но всегда видна на ПК благодаря md:block) */}
+          <div className={`${isLegendOpen ? "block" : "hidden"} md:block bg-white p-3.5 rounded-xl shadow-lg border border-gray-100 max-w-xs text-xs text-gray-800 font-medium select-none`}>
+            {mode === "suitability" ? (
+              <div>
+                <h4 className="font-bold text-blue-900 mb-2 border-b border-gray-100 pb-1 text-sm">Suitability Rating</h4>
+                <div className="space-y-1.5">
+                  <div className="flex items-center"><span className="w-3.5 h-3.5 rounded-full mr-2 bg-[#15803d]" />Excellent (≥80%)</div>
+                  <div className="flex items-center"><span className="w-3.5 h-3.5 rounded-full mr-2 bg-[#22c55e]" />Very Good (70-79%)</div>
+                  <div className="flex items-center"><span className="w-3.5 h-3.5 rounded-full mr-2 bg-[#84cc16]" />Good (60-69%)</div>
+                  <div className="flex items-center"><span className="w-3.5 h-3.5 rounded-full mr-2 bg-[#14b8a6]" />Average (50-59%)</div>
+                  <div className="flex items-center"><span className="w-3.5 h-3.5 rounded-full mr-2 bg-[#0ea5e9]" />Moderate (40-49%)</div>
+                  <div className="flex items-center"><span className="w-3.5 h-3.5 rounded-full mr-2 bg-[#2563eb]" />Poor (25-39%)</div>
+                  <div className="flex items-center"><span className="w-3.5 h-3.5 rounded-full mr-2 bg-[#1e3a8a]" />Very Poor (&lt;25%)</div>
+                  <div className="flex items-center border-t border-gray-100 pt-1.5 mt-1.5"><span className="w-3.5 h-3.5 rounded-full mr-2 bg-[#64748b]" />Natura 2000 (Protected)</div>
+                  <div className="flex items-center mt-1"><span className="w-3.5 h-3.5 border border-white outline outline-1 outline-blue-400 rounded-full mr-2 bg-green-500" />Border = Highly Suitable</div>
+                </div>
               </div>
-            </div>
-          ) : (
-            <div>
-              <h4 className="font-bold text-indigo-900 mb-2 border-b border-gray-100 pb-1 text-sm">Wind Speed (m/s)</h4>
-              <div className="space-y-1.5">
-                <div className="flex items-center"><span className="w-3.5 h-3.5 rounded-full mr-2 bg-[#15803d]" />Excellent (≥9.0 m/s)</div>
-                <div className="flex items-center"><span className="w-3.5 h-3.5 rounded-full mr-2 bg-[#22c55e]" />Very Good (8.0 - 8.9 m/s)</div>
-                <div className="flex items-center"><span className="w-3.5 h-3.5 rounded-full mr-2 bg-[#84cc16]" />Good (7.0 - 7.9 m/s)</div>
-                <div className="flex items-center"><span className="w-3.5 h-3.5 rounded-full mr-2 bg-[#14b8a6]" />Moderate (6.0 - 6.9 m/s)</div>
-                <div className="flex items-center"><span className="w-3.5 h-3.5 rounded-full mr-2 bg-[#0ea5e9]" />Moderate-Low (5.0 - 5.9 m/s)</div>
-                <div className="flex items-center"><span className="w-3.5 h-3.5 rounded-full mr-2 bg-[#2563eb]" />Low (4.0 - 4.9 m/s)</div>
-                <div className="flex items-center"><span className="w-3.5 h-3.5 rounded-full mr-2 bg-[#1e3a8a]" />Very Low (&lt;4.0 m/s)</div>
+            ) : (
+              <div>
+                <h4 className="font-bold text-indigo-900 mb-2 border-b border-gray-100 pb-1 text-sm">Wind Speed (m/s)</h4>
+                <div className="space-y-1.5">
+                  <div className="flex items-center"><span className="w-3.5 h-3.5 rounded-full mr-2 bg-[#15803d]" />Excellent (≥9.0 m/s)</div>
+                  <div className="flex items-center"><span className="w-3.5 h-3.5 rounded-full mr-2 bg-[#22c55e]" />Very Good (8.0 - 8.9 m/s)</div>
+                  <div className="flex items-center"><span className="w-3.5 h-3.5 rounded-full mr-2 bg-[#84cc16]" />Good (7.0 - 7.9 m/s)</div>
+                  <div className="flex items-center"><span className="w-3.5 h-3.5 rounded-full mr-2 bg-[#14b8a6]" />Moderate (6.0 - 6.9 m/s)</div>
+                  <div className="flex items-center"><span className="w-3.5 h-3.5 rounded-full mr-2 bg-[#0ea5e9]" />Moderate-Low (5.0 - 5.9 m/s)</div>
+                  <div className="flex items-center"><span className="w-3.5 h-3.5 rounded-full mr-2 bg-[#2563eb]" />Low (4.0 - 4.9 m/s)</div>
+                  <div className="flex items-center"><span className="w-3.5 h-3.5 rounded-full mr-2 bg-[#1e3a8a]" />Very Low (&lt;4.0 m/s)</div>
+                </div>
+                <p className="text-[10px] text-gray-400 mt-2 border-t border-gray-100 pt-1.5 font-semibold">
+                  Netherlands & International Wind Explorer
+                </p>
               </div>
-              <p className="text-[10px] text-gray-400 mt-2 border-t border-gray-100 pt-1.5 font-semibold">
-                Netherlands & International Wind Explorer
-              </p>
-            </div>
-          )}
+            )}
+          </div>
         </div>
 
         <MapContainer 
