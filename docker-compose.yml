@@ -11,11 +11,7 @@ services:
     container_name: wind_frontend
     restart: always
     environment:
-      - NEXT_PUBLIC_API_URL=http://18.159.211.115
-    volumes:
-      - ./frontendnpx:/app
-      - /app/node_modules
-      - /app/.next
+      - NEXT_PUBLIC_API_URL=https://18.159.211.115
     depends_on:
       - backend
 
