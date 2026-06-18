@@ -3,8 +3,6 @@ services:
     build: ./backend
     container_name: wind_backend
     restart: always
-    ports:
-      - "8000:8000"
     environment:
       - MONGO_URI=${MONGO_URI}
 
@@ -12,8 +10,6 @@ services:
     build: ./frontendnpx
     container_name: wind_frontend
     restart: always
-    ports:
-      - "3000:3000"
     environment:
       - NEXT_PUBLIC_API_URL=http://18.159.211.115
     volumes:
