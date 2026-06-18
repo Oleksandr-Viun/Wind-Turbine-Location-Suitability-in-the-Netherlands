@@ -6,6 +6,7 @@ __pycache__/
 .idea/
 .env
 
+
 # C extensions
 *.so
 
@@ -208,6 +209,8 @@ tempCodeRunnerFile.py
 
 # Ruff stuff:
 .ruff_cache/
+.tar.gz
+.zip
 
 # PyPI configuration file
 .pypirc

@@ -5,6 +5,9 @@ import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 import { useState, useEffect } from "react";
 
+// УМНАЯ ПЕРЕМЕННАЯ: Берет адрес из настроек Докера или использует сервер по умолчанию
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://18.159.211.115";
+
 // --- INTERFACES & TYPES ---
 interface Station {
   STN: number;
@@ -111,7 +114,7 @@ function MapClickHandler({
 
       if (mode === "suitability") {
         try {
-          const res = await fetch("http://127.0.0.1:8000/api/v1/turbines/evaluate", {
+          const res = await fetch(`${API_URL}/api/v1/turbines/evaluate`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ lat: lat, lon: lng, turbine_model: "Vestas_V164" }),
@@ -123,7 +126,7 @@ function MapClickHandler({
         }
       } else {
         try {
-          const queryUrl = `http://127.0.0.1:8000/api/v1/wind-explorer/point?lat=${lat}&lon=${lng}&mode=${explorerSubMode}${
+          const queryUrl = `${API_URL}/api/v1/wind-explorer/point?lat=${lat}&lon=${lng}&mode=${explorerSubMode}${
             explorerSubMode === "country" ? `&country=${selectedCountry}` : ""
           }`;
           const res = await fetch(queryUrl);
@@ -215,9 +218,9 @@ export default function MapComponent() {
   const [candidatesError, setCandidatesError] = useState<string | null>(null);
   const [selectedCandidate, setSelectedCandidate] = useState<{ lat: number; lon: number } | null>(null);
 
-  // 1. Load the list of weather stations (unconditionally, useful for both)
+  // 1. Load the list of weather stations
   useEffect(() => {
-    fetch("http://127.0.0.1:8000/api/v1/stations")
+    fetch(`${API_URL}/api/v1/stations`)
       .then((res) => res.json())
       .then((data) => setStations(data))
       .catch((err) => console.error("Error loading stations:", err));
@@ -225,8 +228,7 @@ export default function MapComponent() {
 
   // 2. Load the ENTIRE ML grid (17k+ points)
   useEffect(() => {
-    // Already defaults to true, so no synchronous setState needed during initial render
-    fetch("http://127.0.0.1:8000/api/v1/wind/all")
+    fetch(`${API_URL}/api/v1/wind/all`)
       .then((res) => res.json())
       .then((data) => {
         setGridData(data);
@@ -238,20 +240,19 @@ export default function MapComponent() {
       });
   }, []);
 
-  // 3. Load the Wind Explorer data dynamically when mode/filters change
+  // 3. Load the Wind Explorer data dynamically
   useEffect(() => {
     if (mode !== "windExplorer") return;
     
-    // Defer setting state to next tick to avoid cascading render warning in React Hooks
     const timer = setTimeout(() => {
       setIsLoadingWindGrid(true);
     }, 0);
     
     let url = "";
     if (explorerSubMode === "netherlands") {
-      url = `http://127.0.0.1:8000/api/v1/wind-explorer/netherlands?month=${selectedMonth}`;
+      url = `${API_URL}/api/v1/wind-explorer/netherlands?month=${selectedMonth}`;
     } else {
-      url = `http://127.0.0.1:8000/api/v1/wind-explorer/country?country=${selectedCountry}`;
+      url = `${API_URL}/api/v1/wind-explorer/country?country=${selectedCountry}`;
     }
 
     fetch(url)
@@ -272,7 +273,7 @@ export default function MapComponent() {
   useEffect(() => {
     if (mode !== "suitability") return;
     
-    fetch("http://127.0.0.1:8000/api/v1/suitability/tiers")
+    fetch(`${API_URL}/api/v1/suitability/tiers`)
       .then((res) => res.json())
       .then((data) => setTierCounts(data))
       .catch((err) => console.error("Error loading tiers counts:", err));
@@ -287,7 +288,7 @@ export default function MapComponent() {
       setCandidatesError(null);
     }, 0);
     
-    const url = `http://127.0.0.1:8000/api/v1/suitability/top?limit=${candidateLimit}&min_score=${candidateMinScore}&diverse=${candidateDiverse}`;
+    const url = `${API_URL}/api/v1/suitability/top?limit=${candidateLimit}&min_score=${candidateMinScore}&diverse=${candidateDiverse}`;
     
     fetch(url)
       .then((res) => {
@@ -318,7 +319,7 @@ export default function MapComponent() {
       setCandidatesError(null);
     }, 0);
     
-    const url = `http://127.0.0.1:8000/api/v1/suitability/top?limit=${candidateLimit}&min_score=${candidateMinScore}&diverse=${candidateDiverse}&min_lat=${mapBbox.min_lat}&max_lat=${mapBbox.max_lat}&min_lon=${mapBbox.min_lon}&max_lon=${mapBbox.max_lon}`;
+    const url = `${API_URL}/api/v1/suitability/top?limit=${candidateLimit}&min_score=${candidateMinScore}&diverse=${candidateDiverse}&min_lat=${mapBbox.min_lat}&max_lat=${mapBbox.max_lat}&min_lon=${mapBbox.min_lon}&max_lon=${mapBbox.max_lon}`;
     
     fetch(url)
       .then((res) => {
@@ -340,29 +341,27 @@ export default function MapComponent() {
     return () => clearTimeout(timer);
   }, [mode, candidateScope, candidateLimit, candidateMinScore, candidateDiverse, mapBbox]);
 
-  // Function to select point color based on its rating (Blue -> Green style)
+  // Function to select point color based on its rating
   const getScoreColor = (score: number, isNatura: number) => {
-    if (isNatura === 1) return "#64748b"; // Slate gray for Natura 2000 (protected)
-    
-    // Blue -> Teal -> Green scale (Higher = More Green/Lighter)
-    if (score >= 80) return "#15803d"; // Dark Green (Excellent)
-    if (score >= 70) return "#22c55e"; // Green (Very Good)
-    if (score >= 60) return "#84cc16"; // Lime (Good)
-    if (score >= 50) return "#14b8a6"; // Teal (Average)
-    if (score >= 40) return "#0ea5e9"; // Sky Blue (Moderate)
-    if (score >= 25) return "#2563eb"; // Blue (Poor)
-    return "#1e3a8a";                 // Dark Blue (Very Poor)
+    if (isNatura === 1) return "#64748b"; 
+    if (score >= 80) return "#15803d"; 
+    if (score >= 70) return "#22c55e"; 
+    if (score >= 60) return "#84cc16"; 
+    if (score >= 50) return "#14b8a6"; 
+    if (score >= 40) return "#0ea5e9"; 
+    if (score >= 25) return "#2563eb"; 
+    return "#1e3a8a";                 
   };
 
-  // Dedicated Wind Speed scale (Blue to Green)
+  // Dedicated Wind Speed scale
   const getWindSpeedColor = (speed: number) => {
-    if (speed >= 9.0) return "#15803d"; // Dark Green
-    if (speed >= 8.0) return "#22c55e"; // Green
-    if (speed >= 7.0) return "#84cc16"; // Lime
-    if (speed >= 6.0) return "#14b8a6"; // Teal
-    if (speed >= 5.0) return "#0ea5e9"; // Sky Blue
-    if (speed >= 4.0) return "#2563eb"; // Blue
-    return "#1e3a8a";                 // Dark Blue
+    if (speed >= 9.0) return "#15803d"; 
+    if (speed >= 8.0) return "#22c55e"; 
+    if (speed >= 7.0) return "#84cc16"; 
+    if (speed >= 6.0) return "#14b8a6"; 
+    if (speed >= 5.0) return "#0ea5e9"; 
+    if (speed >= 4.0) return "#2563eb"; 
+    return "#1e3a8a";                 
   };
 
   return (
@@ -522,8 +521,7 @@ export default function MapComponent() {
                       onClick={() => {
                         setSelectedCandidate({ lat: cand.cell_lat, lon: cand.cell_lon });
                         setClickPos({ lat: cand.cell_lat, lng: cand.cell_lon });
-                        // Re-trigger standard turbine evaluate popup on that coordinates
-                        fetch("http://127.0.0.1:8000/api/v1/turbines/evaluate", {
+                        fetch(`${API_URL}/api/v1/turbines/evaluate`, {
                           method: "POST",
                           headers: { "Content-Type": "application/json" },
                           body: JSON.stringify({ lat: cand.cell_lat, lon: cand.cell_lon, turbine_model: "Vestas_V164" }),
@@ -562,7 +560,7 @@ export default function MapComponent() {
           </div>
         )}
 
-        {/* Section: Controls (conditional based on mode) */}
+        {/* Section: Controls */}
         {mode === "windExplorer" && (
           <div className="mb-6 bg-indigo-50/50 border border-indigo-100/50 rounded-xl p-4 space-y-4">
             <div>
@@ -701,14 +699,14 @@ export default function MapComponent() {
       {/* RIGHT PANEL (MAP) */}
       <div className="flex-1 h-full relative z-0">
         
-        {/* Grid loading indicator overlay on the map */}
+        {/* Grid loading indicator */}
         {(isLoadingGrid || (mode === "windExplorer" && isLoadingWindGrid)) && (
           <div className="absolute top-4 right-4 z-[1000] bg-white px-3 py-2 rounded-lg shadow-md text-xs font-bold animate-pulse flex items-center border border-gray-100 text-gray-700">
             <span className="mr-1.5">⏳</span> Loading Grid...
           </div>
         )}
 
-        {/* Legend overlay Panel on the map */}
+        {/* Legend overlay */}
         <div className="absolute bottom-4 right-4 z-[1000] bg-white p-3.5 rounded-xl shadow-lg border border-gray-100 max-w-xs text-xs text-gray-800 font-medium select-none">
           {mode === "suitability" ? (
             <div>
@@ -748,7 +746,7 @@ export default function MapComponent() {
           center={[52.3, 4.9]} 
           zoom={7} 
           className="w-full h-full z-0"
-          preferCanvas={true} // OPTIMIZATION: Render via Canvas for 17k+ points
+          preferCanvas={true} 
         >
           <TileLayer
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
@@ -807,7 +805,7 @@ export default function MapComponent() {
             );
           })}
 
-          {/* Draw weather stations (Smaller pin markers, shown only on Suitability or as NL overlay) */}
+          {/* Draw weather stations */}
           {mode === "suitability" && stations.map((st) => (
             <Marker 
               key={st.STN} 
