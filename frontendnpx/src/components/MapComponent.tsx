@@ -368,7 +368,7 @@ export default function MapComponent() {
     <div className="flex flex-col md:flex-row h-screen w-screen overflow-hidden bg-gray-50">
       
       {/* LEFT PANEL (SIDEBAR) */}
-      <div className="w-full h-1/2 md:w-1/3 lg:w-1/4 p-6 bg-white shadow-xl z-10 flex flex-col md:h-full overflow-y-auto border-r border-gray-100 select-none order-last md:order-first">
+      <div className="w-full h-[50vh] md:h-full md:w-1/3 lg:w-1/4 p-6 bg-white shadow-xl z-10 flex flex-col overflow-y-auto border-r border-gray-100 select-none order-last md:order-first">
         
         {/* App Title & Subtitle */}
         <div className="mb-6">
@@ -697,7 +697,7 @@ export default function MapComponent() {
       </div>
 
       {/* RIGHT PANEL (MAP) */}
-      <div className="flex-1 h-full relative z-0">
+      <div className="w-full h-[50vh] md:h-full md:flex-1 relative z-0 order-first md:order-last">
         
         {/* Grid loading indicator */}
         {(isLoadingGrid || (mode === "windExplorer" && isLoadingWindGrid)) && (
