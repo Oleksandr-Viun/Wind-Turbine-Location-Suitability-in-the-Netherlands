@@ -368,7 +368,7 @@ export default function MapComponent() {
     <div className="flex flex-col md:flex-row h-screen w-screen overflow-hidden bg-gray-50">
       
       {/* LEFT PANEL (SIDEBAR) */}
-      <div className="w-full md:w-1/3 lg:w-1/4 p-6 bg-white shadow-xl z-10 flex flex-col h-full overflow-y-auto border-r border-gray-100 select-none">
+      <div className="w-full h-1/2 md:w-1/3 lg:w-1/4 p-6 bg-white shadow-xl z-10 flex flex-col md:h-full overflow-y-auto border-r border-gray-100 select-none order-last md:order-first">
         
         {/* App Title & Subtitle */}
         <div className="mb-6">
