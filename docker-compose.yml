@@ -5,6 +5,7 @@ services:
     restart: always
     environment:
       - MONGO_URI=${MONGO_URI}
+      - MONGO_DB=wind_suitability_db
 
   frontend:
     build: ./frontendnpx
