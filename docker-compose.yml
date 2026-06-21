@@ -12,7 +12,7 @@ services:
     container_name: wind_frontend
     restart: always
     environment:
-      - NEXT_PUBLIC_API_URL=https://https://windturbine.ink/api
+      - NEXT_PUBLIC_API_URL=https://windturbine.ink/api
     depends_on:
       - backend
 
