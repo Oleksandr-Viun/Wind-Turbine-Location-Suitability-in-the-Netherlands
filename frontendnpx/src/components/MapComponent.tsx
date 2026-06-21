@@ -3,7 +3,7 @@
 import { MapContainer, TileLayer, Marker, Popup, useMapEvents, CircleMarker, useMap } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 
 // УМНАЯ ПЕРЕМЕННАЯ: Берет адрес из настроек Докера или использует сервер по умолчанию
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://windturbine.ink";
@@ -80,8 +80,8 @@ const DefaultIcon = L.icon({
 const SmallIcon = L.icon({
   iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
   shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
-  iconSize: [13, 20], // Reduced size
-  iconAnchor: [9, 30], // Centered at bottom
+  iconSize: [13, 20], 
+  iconAnchor: [9, 30], 
 });
 
 L.Marker.prototype.options.icon = DefaultIcon;
@@ -97,7 +97,7 @@ interface MapClickProps {
   setMapBbox: (bbox: { min_lat: number; max_lat: number; min_lon: number; max_lon: number } | null) => void;
 }
 
-// Map click handler component declared in parent scope to prevent render-creation warning
+// Map click handler component
 function MapClickHandler({
   mode,
   explorerSubMode,
@@ -111,6 +111,10 @@ function MapClickHandler({
     click: async (e) => {
       const { lat, lng } = e.latlng;
       setClickPos({ lat, lng });
+      
+      // ОЧИЩАЕМ СТАРЫЕ ДАННЫЕ ПРИ КЛИКЕ, ЧТОБЫ ПОКАЗАТЬ ЗАГРУЗКУ И ИЗБЕЖАТЬ МИГАНИЯ
+      setEvaluation(null);
+      setWindPointDetails(null);
 
       if (mode === "suitability") {
         try {
@@ -123,6 +127,7 @@ function MapClickHandler({
           setEvaluation(data);
         } catch (err) {
           console.error("Evaluation error:", err);
+          setEvaluation({ score: 0, error: "Failed to fetch" }); // Fallback error state
         }
       } else {
         try {
@@ -134,6 +139,7 @@ function MapClickHandler({
           setWindPointDetails(data);
         } catch (err) {
           console.error("Wind point lookup error:", err);
+          setWindPointDetails({ error: "Failed to fetch" }); // Fallback error state
         }
       }
     },
@@ -157,7 +163,6 @@ function MapClickHandler({
     }
   });
 
-  // Track initial bounds once map loads
   useEffect(() => {
     if (map) {
       const bounds = map.getBounds();
@@ -177,7 +182,6 @@ interface MapControllerProps {
   selectedCandidate: { lat: number; lon: number } | null;
 }
 
-// Controller component to center and zoom map when candidate card is clicked
 function MapController({ selectedCandidate }: MapControllerProps) {
   const map = useMap();
   
@@ -217,7 +221,6 @@ export default function MapComponent() {
   const [isLoadingCandidates, setIsLoadingCandidates] = useState(false);
   const [candidatesError, setCandidatesError] = useState<string | null>(null);
   const [selectedCandidate, setSelectedCandidate] = useState<{ lat: number; lon: number } | null>(null);
-  // mobile legenda
   const [isLegendOpen, setIsLegendOpen] = useState(false);
 
   // 1. Load the list of weather stations
@@ -228,7 +231,7 @@ export default function MapComponent() {
       .catch((err) => console.error("Error loading stations:", err));
   }, []);
 
-  // 2. Load the ENTIRE ML grid (17k+ points)
+  // 2. Load the ENTIRE ML grid
   useEffect(() => {
     fetch(`${API_URL}/api/v1/wind/all`)
       .then((res) => res.json())
@@ -246,9 +249,7 @@ export default function MapComponent() {
   useEffect(() => {
     if (mode !== "windExplorer") return;
     
-    const timer = setTimeout(() => {
-      setIsLoadingWindGrid(true);
-    }, 0);
+    setIsLoadingWindGrid(true);
     
     let url = "";
     if (explorerSubMode === "netherlands") {
@@ -268,7 +269,6 @@ export default function MapComponent() {
         setIsLoadingWindGrid(false);
       });
 
-    return () => clearTimeout(timer);
   }, [mode, explorerSubMode, selectedMonth, selectedCountry]);
 
   // 3.5 Fetch Tiers Counts
@@ -285,18 +285,14 @@ export default function MapComponent() {
   useEffect(() => {
     if (mode !== "suitability" || candidateScope !== "global") return;
     
-    const timer = setTimeout(() => {
-      setIsLoadingCandidates(true);
-      setCandidatesError(null);
-    }, 0);
+    setIsLoadingCandidates(true);
+    setCandidatesError(null);
     
     const url = `${API_URL}/api/v1/suitability/top?limit=${candidateLimit}&min_score=${candidateMinScore}&diverse=${candidateDiverse}`;
     
     fetch(url)
       .then((res) => {
-        if (!res.ok) {
-          throw new Error("Failed to fetch top candidates");
-        }
+        if (!res.ok) throw new Error("Failed to fetch top candidates");
         return res.json();
       })
       .then((data) => {
@@ -308,26 +304,20 @@ export default function MapComponent() {
         setCandidatesError("Candidates lookup unavailable");
         setIsLoadingCandidates(false);
       });
-
-    return () => clearTimeout(timer);
   }, [mode, candidateScope, candidateLimit, candidateMinScore, candidateDiverse]);
 
   // 3.7 Fetch Top Candidate Locations (Map View Scope)
   useEffect(() => {
     if (mode !== "suitability" || candidateScope !== "mapView" || !mapBbox) return;
     
-    const timer = setTimeout(() => {
-      setIsLoadingCandidates(true);
-      setCandidatesError(null);
-    }, 0);
+    setIsLoadingCandidates(true);
+    setCandidatesError(null);
     
     const url = `${API_URL}/api/v1/suitability/top?limit=${candidateLimit}&min_score=${candidateMinScore}&diverse=${candidateDiverse}&min_lat=${mapBbox.min_lat}&max_lat=${mapBbox.max_lat}&min_lon=${mapBbox.min_lon}&max_lon=${mapBbox.max_lon}`;
     
     fetch(url)
       .then((res) => {
-        if (!res.ok) {
-          throw new Error("Failed to fetch top candidates");
-        }
+        if (!res.ok) throw new Error("Failed to fetch top candidates");
         return res.json();
       })
       .then((data) => {
@@ -339,11 +329,8 @@ export default function MapComponent() {
         setCandidatesError("Candidates lookup unavailable");
         setIsLoadingCandidates(false);
       });
-
-    return () => clearTimeout(timer);
   }, [mode, candidateScope, candidateLimit, candidateMinScore, candidateDiverse, mapBbox]);
 
-  // Function to select point color based on its rating
   const getScoreColor = (score: number, isNatura: number) => {
     if (isNatura === 1) return "#64748b"; 
     if (score >= 80) return "#15803d"; 
@@ -355,7 +342,6 @@ export default function MapComponent() {
     return "#1e3a8a";                 
   };
 
-  // Dedicated Wind Speed scale
   const getWindSpeedColor = (speed: number) => {
     if (speed >= 9.0) return "#15803d"; 
     if (speed >= 8.0) return "#22c55e"; 
@@ -365,6 +351,51 @@ export default function MapComponent() {
     if (speed >= 4.0) return "#2563eb"; 
     return "#1e3a8a";                 
   };
+
+  // --- КЭШИРОВАНИЕ ДАННЫХ ДЛЯ КАРТЫ (useMemo) ---
+  // Избавляет от тормозов при кликах
+  const suitabilityMarkers = useMemo(() => {
+    return gridData.map((point, idx) => {
+      const score = point.ml_suitability_score || 0;
+      const isHighlySuitable = score >= 70;
+      return (
+        <CircleMarker
+          key={`grid-${idx}`}
+          center={[point.cell_lat, point.cell_lon]}
+          radius={isHighlySuitable ? 3.5 : 2}
+          pathOptions={{
+            fillColor: point.suitability_color || getScoreColor(score, point.is_natura2000 || 0),
+            stroke: isHighlySuitable,
+            color: "#ffffff",
+            weight: 1.5,
+            fillOpacity: 0.85
+          }}
+        />
+      );
+    });
+  }, [gridData]);
+
+  const windExplorerMarkers = useMemo(() => {
+    return windExplorerGrid.map((point, idx) => {
+      const speed = point.wind_speed;
+      const isHighWind = speed >= 8.0;
+      return (
+        <CircleMarker
+          key={`wind-grid-${idx}`}
+          center={[point.cell_lat, point.cell_lon]}
+          radius={isHighWind ? 3 : 1.8}
+          pathOptions={{
+            fillColor: getWindSpeedColor(speed),
+            stroke: isHighWind,
+            color: "#ffffff",
+            weight: 1,
+            fillOpacity: 0.8
+          }}
+        />
+      );
+    });
+  }, [windExplorerGrid]);
+  // ----------------------------------------------
 
   return (
     <div className="flex flex-col md:flex-row h-screen w-screen overflow-hidden bg-gray-50">
@@ -523,6 +554,7 @@ export default function MapComponent() {
                       onClick={() => {
                         setSelectedCandidate({ lat: cand.cell_lat, lon: cand.cell_lon });
                         setClickPos({ lat: cand.cell_lat, lng: cand.cell_lon });
+                        setEvaluation(null); // Очищаем данные перед запросом нового кандидата
                         fetch(`${API_URL}/api/v1/turbines/evaluate`, {
                           method: "POST",
                           headers: { "Content-Type": "application/json" },
@@ -610,8 +642,7 @@ export default function MapComponent() {
                 >
                   <option value="annual">Annual Average</option>
                   <option value="1">January</option>
-                  <option value="2">February</option>https://windturbine.ink/api
-
+                  <option value="2">February</option>
                   <option value="3">March</option>
                   <option value="4">April</option>
                   <option value="5">May</option>
@@ -712,7 +743,6 @@ export default function MapComponent() {
         {/* Legend overlay */}
         <div className="absolute bottom-4 right-2 md:right-4 z-[1000] flex flex-col items-end">
           
-          {/* Кнопка-переключатель (Видна ТОЛЬКО на мобилках благодаря md:hidden) */}
           <button 
             onClick={() => setIsLegendOpen(!isLegendOpen)}
             className="md:hidden mb-2 bg-white px-3 py-2 rounded-lg shadow-md border border-gray-200 text-xs font-bold text-blue-900 flex items-center gap-1.5 active:bg-gray-50"
@@ -720,7 +750,6 @@ export default function MapComponent() {
             {isLegendOpen ? "▼ Hide Legend" : "▲ Show Legend"}
           </button>
 
-          {/* Сама Легенда (Скрыта на мобилках по умолчанию, но всегда видна на ПК благодаря md:block) */}
           <div className={`${isLegendOpen ? "block" : "hidden"} md:block bg-white p-3.5 rounded-xl shadow-lg border border-gray-100 max-w-xs text-xs text-gray-800 font-medium select-none`}>
             {mode === "suitability" ? (
               <div>
@@ -778,47 +807,11 @@ export default function MapComponent() {
           />
           <MapController selectedCandidate={selectedCandidate} />
 
-          {/* 1. Draw Suitability Grid dots */}
-          {mode === "suitability" && gridData.map((point, idx) => {
-            const score = point.ml_suitability_score || 0;
-            const isHighlySuitable = score >= 70;
-            
-            return (
-              <CircleMarker
-                key={`grid-${idx}`}
-                center={[point.cell_lat, point.cell_lon]}
-                radius={isHighlySuitable ? 3.5 : 2}
-                pathOptions={{
-                  fillColor: point.suitability_color || getScoreColor(score, point.is_natura2000 || 0),
-                  stroke: isHighlySuitable,
-                  color: "#ffffff",
-                  weight: 1.5,
-                  fillOpacity: 0.85
-                }}
-              />
-            );
-          })}
+          {/* 1. ИСПОЛЬЗУЕМ КЭШИРОВАННЫЕ ТОЧКИ ВМЕСТО ВЫЗОВА .map() */}
+          {mode === "suitability" && suitabilityMarkers}
 
-          {/* 2. Draw Wind Explorer Grid dots */}
-          {mode === "windExplorer" && windExplorerGrid.map((point, idx) => {
-            const speed = point.wind_speed;
-            const isHighWind = speed >= 8.0;
-
-            return (
-              <CircleMarker
-                key={`wind-grid-${idx}`}
-                center={[point.cell_lat, point.cell_lon]}
-                radius={isHighWind ? 3 : 1.8}
-                pathOptions={{
-                  fillColor: getWindSpeedColor(speed),
-                  stroke: isHighWind,
-                  color: "#ffffff",
-                  weight: 1,
-                  fillOpacity: 0.8
-                }}
-              />
-            );
-          })}
+          {/* 2. ИСПОЛЬЗУЕМ КЭШИРОВАННЫЕ ТОЧКИ */}
+          {mode === "windExplorer" && windExplorerMarkers}
 
           {/* Draw weather stations */}
           {mode === "suitability" && stations.map((st) => (
@@ -827,7 +820,7 @@ export default function MapComponent() {
               position={[st.lat, st.lon]}
               icon={SmallIcon}
             >
-              <Popup>
+              <Popup autoPan={false}>
                 <b>{st.station_name}</b> <br />
                 ID: {st.STN} <br />
                 Wind: {st.avg_wind_speed} m/s
@@ -836,95 +829,109 @@ export default function MapComponent() {
           ))}
 
           {/* Draw Suitability popup at user's click location */}
-          {clickPos && mode === "suitability" && evaluation && !evaluation.error && (
-            <Popup position={[clickPos.lat, clickPos.lng]}>
+          {clickPos && mode === "suitability" && (
+            <Popup position={[clickPos.lat, clickPos.lng]} autoPan={false}>
               <div className="p-1 min-w-[200px] text-gray-800">
-                <h3 className="font-bold text-lg mb-1 border-b pb-1">Location Assessment</h3>
-                
-                <div className="my-2">
-                  {evaluation.score >= 60 ? (
-                    <span className="bg-green-100 text-green-800 text-xs font-bold px-2.5 py-0.5 rounded">✅ SUITABLE</span>
-                  ) : (
-                    <span className="bg-red-100 text-red-800 text-xs font-bold px-2.5 py-0.5 rounded">❌ UNSUITABLE</span>
-                  )}
-                </div>
-
-                <div className="space-y-1 text-sm font-semibold">
-                  <p><b>Rating (ML):</b> <span className="text-blue-700 font-extrabold">{evaluation.score}%</span></p>
-                  <p><b>Cluster:</b> {evaluation.ml_label}</p>
-                  <p><b>Wind:</b> {evaluation.wind_speed_ms} m/s</p>
-                  <p><b>Population:</b> {evaluation.environment?.population_density} p/km²</p>
-                  <p><b>Natura 2000:</b> {evaluation.environment?.is_natura2000 ? "Yes" : "No"}</p>
-                </div>
-                
-                {evaluation.warnings && evaluation.warnings.length > 0 && (
-                  <div className="mt-2 text-[11px] text-yellow-800 bg-yellow-50 p-2 rounded border border-yellow-100 font-semibold">
-                    <b>Warnings:</b>
-                    <ul className="list-disc pl-3 mt-1">
-                      {evaluation.warnings.map((w: string, i: number) => (
-                        <li key={i}>{w}</li>
-                      ))}
-                    </ul>
+                {!evaluation ? (
+                  <div className="flex justify-center items-center h-24 text-sm font-bold text-blue-600 animate-pulse">
+                    ⏳ Loading assessment...
                   </div>
+                ) : evaluation.error ? (
+                  <div className="text-red-500 font-bold">Error loading data</div>
+                ) : (
+                  <>
+                    <h3 className="font-bold text-lg mb-1 border-b pb-1">Location Assessment</h3>
+                    <div className="my-2">
+                      {evaluation.score >= 60 ? (
+                        <span className="bg-green-100 text-green-800 text-xs font-bold px-2.5 py-0.5 rounded">✅ SUITABLE</span>
+                      ) : (
+                        <span className="bg-red-100 text-red-800 text-xs font-bold px-2.5 py-0.5 rounded">❌ UNSUITABLE</span>
+                      )}
+                    </div>
+                    <div className="space-y-1 text-sm font-semibold">
+                      <p><b>Rating (ML):</b> <span className="text-blue-700 font-extrabold">{evaluation.score}%</span></p>
+                      <p><b>Cluster:</b> {evaluation.ml_label}</p>
+                      <p><b>Wind:</b> {evaluation.wind_speed_ms} m/s</p>
+                      <p><b>Population:</b> {evaluation.environment?.population_density} p/km²</p>
+                      <p><b>Natura 2000:</b> {evaluation.environment?.is_natura2000 ? "Yes" : "No"}</p>
+                    </div>
+                    {evaluation.warnings && evaluation.warnings.length > 0 && (
+                      <div className="mt-2 text-[11px] text-yellow-800 bg-yellow-50 p-2 rounded border border-yellow-100 font-semibold">
+                        <b>Warnings:</b>
+                        <ul className="list-disc pl-3 mt-1">
+                          {evaluation.warnings.map((w: string, i: number) => (
+                            <li key={i}>{w}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             </Popup>
           )}
 
           {/* Draw Wind Explorer popup at user's click location */}
-          {clickPos && mode === "windExplorer" && windPointDetails && !windPointDetails.error && (
-            <Popup position={[clickPos.lat, clickPos.lng]}>
+          {clickPos && mode === "windExplorer" && (
+            <Popup position={[clickPos.lat, clickPos.lng]} autoPan={false}>
               <div className="p-1 min-w-[200px] text-gray-800">
-                <h3 className="font-bold text-lg mb-1 border-b pb-1 text-indigo-900">
-                  Wind Observation
-                </h3>
-                
-                <div className="my-2">
-                  <span className="bg-blue-100 text-blue-800 text-xs font-bold px-2.5 py-0.5 rounded">
-                    💨 {explorerSubMode === "netherlands" 
-                      ? `NL - ${selectedMonth === "annual" ? "Annual" : `Month ${selectedMonth}`}` 
-                      : `${selectedCountry}`}
-                  </span>
-                </div>
-
-                <div className="space-y-1.5 text-sm font-semibold">
-                  <p><b>Coordinates:</b> {clickPos.lat.toFixed(4)}, {clickPos.lng.toFixed(4)}</p>
-                  
-                  {explorerSubMode === "netherlands" ? (
-                    <>
-                      <p><b>Current Wind:</b> <span className="text-green-700 font-extrabold">
-                        {selectedMonth === "annual" 
-                          ? `${windPointDetails.annual_wind_speed?.toFixed(2)} m/s` 
-                          : `${windPointDetails.monthly_wind_speed?.[selectedMonth]?.toFixed(2)} m/s`}
-                      </span></p>
-                      <p><b>Annual Mean:</b> {windPointDetails.annual_wind_speed?.toFixed(2)} m/s</p>
-                      {windPointDetails.monthly_wind_speed && (
-                        <div className="mt-2 text-[11px] bg-indigo-50 border border-indigo-100 rounded p-1.5 text-indigo-950 font-semibold">
-                          <b className="block mb-1 border-b border-indigo-100 text-indigo-900">Monthly breakdown:</b>
-                          <div className="grid grid-cols-3 gap-1 text-center font-mono">
-                            <div>Jan: {windPointDetails.monthly_wind_speed["1"]?.toFixed(1)}</div>
-                            <div>Feb: {windPointDetails.monthly_wind_speed["2"]?.toFixed(1)}</div>
-                            <div>Mar: {windPointDetails.monthly_wind_speed["3"]?.toFixed(1)}</div>
-                            <div>Apr: {windPointDetails.monthly_wind_speed["4"]?.toFixed(1)}</div>
-                            <div>May: {windPointDetails.monthly_wind_speed["5"]?.toFixed(1)}</div>
-                            <div>Jun: {windPointDetails.monthly_wind_speed["6"]?.toFixed(1)}</div>
-                            <div>Jul: {windPointDetails.monthly_wind_speed["7"]?.toFixed(1)}</div>
-                            <div>Aug: {windPointDetails.monthly_wind_speed["8"]?.toFixed(1)}</div>
-                            <div>Sep: {windPointDetails.monthly_wind_speed["9"]?.toFixed(1)}</div>
-                            <div>Oct: {windPointDetails.monthly_wind_speed["10"]?.toFixed(1)}</div>
-                            <div>Nov: {windPointDetails.monthly_wind_speed["11"]?.toFixed(1)}</div>
-                            <div>Dec: {windPointDetails.monthly_wind_speed["12"]?.toFixed(1)}</div>
-                          </div>
-                        </div>
+                {!windPointDetails ? (
+                  <div className="flex justify-center items-center h-24 text-sm font-bold text-indigo-600 animate-pulse">
+                    ⏳ Fetching wind data...
+                  </div>
+                ) : windPointDetails.error ? (
+                  <div className="text-red-500 font-bold">Error loading data</div>
+                ) : (
+                  <>
+                    <h3 className="font-bold text-lg mb-1 border-b pb-1 text-indigo-900">
+                      Wind Observation
+                    </h3>
+                    <div className="my-2">
+                      <span className="bg-blue-100 text-blue-800 text-xs font-bold px-2.5 py-0.5 rounded">
+                        💨 {explorerSubMode === "netherlands" 
+                          ? `NL - ${selectedMonth === "annual" ? "Annual" : `Month ${selectedMonth}`}` 
+                          : `${selectedCountry}`}
+                      </span>
+                    </div>
+                    <div className="space-y-1.5 text-sm font-semibold">
+                      <p><b>Coordinates:</b> {clickPos.lat.toFixed(4)}, {clickPos.lng.toFixed(4)}</p>
+                      {explorerSubMode === "netherlands" ? (
+                        <>
+                          <p><b>Current Wind:</b> <span className="text-green-700 font-extrabold">
+                            {selectedMonth === "annual" 
+                              ? `${windPointDetails.annual_wind_speed?.toFixed(2)} m/s` 
+                              : `${windPointDetails.monthly_wind_speed?.[selectedMonth]?.toFixed(2)} m/s`}
+                          </span></p>
+                          <p><b>Annual Mean:</b> {windPointDetails.annual_wind_speed?.toFixed(2)} m/s</p>
+                          {windPointDetails.monthly_wind_speed && (
+                            <div className="mt-2 text-[11px] bg-indigo-50 border border-indigo-100 rounded p-1.5 text-indigo-950 font-semibold">
+                              <b className="block mb-1 border-b border-indigo-100 text-indigo-900">Monthly breakdown:</b>
+                              <div className="grid grid-cols-3 gap-1 text-center font-mono">
+                                <div>Jan: {windPointDetails.monthly_wind_speed["1"]?.toFixed(1)}</div>
+                                <div>Feb: {windPointDetails.monthly_wind_speed["2"]?.toFixed(1)}</div>
+                                <div>Mar: {windPointDetails.monthly_wind_speed["3"]?.toFixed(1)}</div>
+                                <div>Apr: {windPointDetails.monthly_wind_speed["4"]?.toFixed(1)}</div>
+                                <div>May: {windPointDetails.monthly_wind_speed["5"]?.toFixed(1)}</div>
+                                <div>Jun: {windPointDetails.monthly_wind_speed["6"]?.toFixed(1)}</div>
+                                <div>Jul: {windPointDetails.monthly_wind_speed["7"]?.toFixed(1)}</div>
+                                <div>Aug: {windPointDetails.monthly_wind_speed["8"]?.toFixed(1)}</div>
+                                <div>Sep: {windPointDetails.monthly_wind_speed["9"]?.toFixed(1)}</div>
+                                <div>Oct: {windPointDetails.monthly_wind_speed["10"]?.toFixed(1)}</div>
+                                <div>Nov: {windPointDetails.monthly_wind_speed["11"]?.toFixed(1)}</div>
+                                <div>Dec: {windPointDetails.monthly_wind_speed["12"]?.toFixed(1)}</div>
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <p><b>Country:</b> {windPointDetails.country || selectedCountry}</p>
+                          <p><b>Annual Wind:</b> <span className="text-green-700 font-extrabold">{windPointDetails.annual_wind_speed?.toFixed(2)} m/s</span></p>
+                        </>
                       )}
-                    </>
-                  ) : (
-                    <>
-                      <p><b>Country:</b> {windPointDetails.country || selectedCountry}</p>
-                      <p><b>Annual Wind:</b> <span className="text-green-700 font-extrabold">{windPointDetails.annual_wind_speed?.toFixed(2)} m/s</span></p>
-                    </>
-                  )}
-                </div>
+                    </div>
+                  </>
+                )}
               </div>
             </Popup>
           )}
