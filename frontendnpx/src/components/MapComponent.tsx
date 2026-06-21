@@ -610,7 +610,8 @@ export default function MapComponent() {
                 >
                   <option value="annual">Annual Average</option>
                   <option value="1">January</option>
-                  <option value="2">February</option>
+                  <option value="2">February</option>https://windturbine.ink/api
+
                   <option value="3">March</option>
                   <option value="4">April</option>
                   <option value="5">May</option>
