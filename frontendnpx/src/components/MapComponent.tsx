@@ -6,7 +6,7 @@ import L from "leaflet";
 import { useState, useEffect } from "react";
 
 // УМНАЯ ПЕРЕМЕННАЯ: Берет адрес из настроек Докера или использует сервер по умолчанию
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://18.159.211.115";
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://windturbine.ink/api";
 
 // --- INTERFACES & TYPES ---
 interface Station {
